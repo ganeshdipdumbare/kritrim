@@ -1,9 +1,24 @@
 # Sandbox providers
 
 A sandbox is anything that can run a process, copy files and be destroyed.
-Docker and Local ship in the core. E2B, microsandbox, Firecracker, Tensorlake,
-Daytona and cloud VMs plug in by implementing three interfaces — no core
-changes.
+Docker, Local and SSH ship in the repository; every adapter must pass the
+conformance suite in [`sandboxtest`](sandboxtest/sandboxtest.go). E2B,
+microsandbox, Firecracker, Tensorlake, Daytona and cloud VMs plug in by
+implementing the same interfaces — no core changes.
+
+```go
+import (
+	"github.com/ganeshdipdumbare/kritrim"
+	"github.com/ganeshdipdumbare/kritrim/sandbox/ssh"
+)
+
+box, err := ssh.New(ssh.Config{
+	Host:       "ubuntu@10.0.1.5",
+	WorkingDir: "/home/ubuntu/workspace",
+	IdentityFile: "~/.ssh/agent_key",
+})
+```
+
 
 ```go
 type Sandbox interface {

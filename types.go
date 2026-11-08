@@ -82,8 +82,9 @@ type Result struct {
 	Text       string      `json:"text"`
 	Steps      []Step      `json:"steps"`
 	Usage      Usage       `json:"usage"`
-	Stop       string      `json:"stop"` // stop | max_steps | interrupt
+	Stop       string      `json:"stop"` // stop | max_steps | interrupt | stopped
 	Interrupts []Interrupt `json:"interrupts,omitempty"`
+	Paused     *PausedStep `json:"paused,omitempty"`
 	Messages   []Message   `json:"messages"`
 	Thread     string      `json:"thread,omitempty"`
 }

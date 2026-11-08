@@ -26,11 +26,16 @@ import (
 // Config is everything an agent is made of.
 type Config struct {
 	// Model is required. Use OpenAI, Anthropic, Gemini, Ollama, Compatible or Mock.
-	Model        Model
+	Model Model
+	// Fallback models are tried in order when a model call keeps failing
+	// with a retryable error.
+	Fallback     []Model
 	Instructions string
 
 	// Tools are the tools the model may call.
 	Tools []Tool
+	// MCP connects MCP servers at startup. Their tools are added to Tools.
+	MCP []MCPConfig
 
 	// Session stores conversations. Default: memory, lost on exit.
 	Session SessionStore
@@ -92,8 +97,12 @@ type Limits struct {
 type Sealed struct {
 	Sandbox Sandbox
 	// Binary is the program the box runs; it must be built for the box OS
-	// and architecture. Default: the running executable.
+	// and architecture. Required for container/cloud sandboxes; default is
+	// the running executable for Local.
 	Binary string
+	// Platform is the box target, e.g. "linux/amd64". Used in the error
+	// when Binary is missing.
+	Platform string
 	// Egress lists hosts the box may reach through the host proxy without a
 	// secret, e.g. "api.example.com" or "*.example.com".
 	Egress []string
@@ -116,6 +125,9 @@ type Agent struct {
 	machine  Machine
 	redactor *redactor
 	box      *boxHost
+	mcp      []*mcpClient
+	mcpTools []string
+	shared   *Agent
 	close    sync.Once
 }
 
@@ -141,15 +153,7 @@ func New(cfg Config) (*Agent, error) {
 		cfg.Session = MemorySessions()
 	}
 	seen := map[string]bool{}
-	for _, t := range cfg.Tools {
-		if err := t.validate(); err != nil {
-			return nil, err
-		}
-		if seen[t.Name] {
-			return nil, fmt.Errorf("kritrim: duplicate tool %q", t.Name)
-		}
-		seen[t.Name] = true
-	}
+	cfg.Tools = append([]Tool(nil), cfg.Tools...)
 	a := &Agent{cfg: cfg, model: cfg.Model, session: cfg.Session, redactor: &redactor{}}
 	if cfg.Sandbox != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
@@ -161,7 +165,55 @@ func New(cfg Config) (*Agent, error) {
 		a.machine = m
 	}
 	a.env = newHostEnv(a)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	if err := a.connectMCP(ctx, cfg.MCP); err != nil {
+		_ = a.Close()
+		return nil, err
+	}
+	for _, t := range a.cfg.Tools {
+		if err := t.validate(); err != nil {
+			_ = a.Close()
+			return nil, err
+		}
+		if seen[t.Name] {
+			_ = a.Close()
+			return nil, fmt.Errorf("kritrim: duplicate tool %q", t.Name)
+		}
+		seen[t.Name] = true
+	}
 	return a, nil
+}
+
+func (a *Agent) connectMCP(ctx context.Context, configs []MCPConfig) error {
+	for _, mc := range configs {
+		c, err := connectMCP(ctx, mc, a)
+		if err != nil {
+			return err
+		}
+		tools, err := c.tools(ctx)
+		if err != nil {
+			c.Close()
+			return err
+		}
+		a.mcp = append(a.mcp, c)
+		a.cfg.Tools = append(a.cfg.Tools, tools...)
+		for _, t := range tools {
+			a.mcpTools = append(a.mcpTools, t.Name)
+		}
+	}
+	return nil
+}
+
+// WithTools returns a shallow copy of the agent with extra tools. The copy
+// shares the model, session store, sandbox and sealed box; close the
+// original, not the copy.
+func (a *Agent) WithTools(extra ...Tool) *Agent {
+	cp := &Agent{cfg: a.cfg, model: a.model, session: a.session, env: a.env,
+		machine: a.machine, redactor: a.redactor, box: a.box, mcp: a.mcp, mcpTools: a.mcpTools,
+		shared: a}
+	cp.cfg.Tools = append(append([]Tool(nil), a.cfg.Tools...), extra...)
+	return cp
 }
 
 // AsTool exposes the agent as a tool another agent can call. The sub-agent
@@ -187,10 +239,16 @@ func (a *Agent) AsTool(name, description string) Tool {
 
 // Close releases the sandbox and the sealed box. Safe to call twice.
 func (a *Agent) Close() error {
+	if a.shared != nil {
+		return nil // a WithTools copy shares the original's resources
+	}
 	var err error
 	a.close.Do(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 		defer cancel()
+		for _, c := range a.mcp {
+			c.Close()
+		}
 		if a.box != nil {
 			err = a.box.close()
 			return

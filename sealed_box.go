@@ -19,6 +19,19 @@ func ServeBox(ctx context.Context, r io.Reader, w io.Writer, cfg Config) error {
 	p := newPeer(r, w)
 	a := newBoxAgent(cfg, p)
 	p.handle("ping", func(context.Context, json.RawMessage) (any, error) { return map[string]bool{"ok": true}, nil })
+	p.handle("tools.add", func(_ context.Context, raw json.RawMessage) (any, error) {
+		var defs []Tool
+		if err := json.Unmarshal(raw, &defs); err != nil {
+			return nil, err
+		}
+		for _, t := range defs {
+			if _, ok := a.tool(t.Name); ok {
+				continue
+			}
+			a.cfg.Tools = append(a.cfg.Tools, proxyTool(p, t))
+		}
+		return nil, nil
+	})
 	p.handle("model.delta", func(_ context.Context, raw json.RawMessage) (any, error) {
 		var d struct {
 			Call      string `json:"call"`
@@ -109,8 +122,11 @@ func newBoxAgent(cfg Config, p *peer) *Agent {
 
 func (a *Agent) boxRun(ctx context.Context, req runParams, p *peer) (*Result, error) {
 	mem := a.session.(*memSessions)
-	_ = mem.Save(ctx, &Session{ID: req.Thread, Messages: req.Messages})
+	_ = mem.Save(ctx, &Session{ID: req.Thread, Messages: req.Messages, Pending: req.Pending, Paused: req.Paused})
 	opts := []Option{Thread(req.Thread), User(req.User), Roles(req.Roles...), Images(req.Images...)}
+	if len(req.Decisions) > 0 {
+		opts = append(opts, Decisions(req.Decisions))
+	}
 	opts = append(opts, withSchema(req.SchemaName, req.Schema))
 	res, err := a.run(ctx, req.Prompt, func(e Event) {
 		if e.Err != nil {

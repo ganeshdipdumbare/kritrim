@@ -362,3 +362,175 @@ func toStrings(v any) []string {
 	}
 	return nil
 }
+
+// ReadConfig configures the line-numbered read tool.
+type ReadConfig struct{ Root string }
+
+// Read returns a tool that reads a file as numbered lines.
+func Read(cfg ReadConfig) Tool {
+	return Tool{
+		Name:        "read",
+		Description: "Read a file as numbered lines. Use offset and limit for large files.",
+		Schema: objectSchema(map[string]any{
+			"path":   map[string]any{"type": "string", "description": "file path"},
+			"offset": map[string]any{"type": "integer", "description": "first line, 1-based"},
+			"limit":  map[string]any{"type": "integer", "description": "max lines (default 200)"},
+		}, "path"),
+		meta: map[string]any{"readonly": true},
+		run: func(ctx context.Context, args map[string]any) (string, error) {
+			p, _ := args["path"].(string)
+			if p == "" {
+				return "", fmt.Errorf("path is required")
+			}
+			b, err := envOf(ctx).ReadFile(ctx, fsRequest{Path: p, Root: cfg.Root})
+			if err != nil {
+				return "", err
+			}
+			lines := strings.Split(string(b), "\n")
+			offset := intArg(args, "offset", 1)
+			if offset < 1 {
+				offset = 1
+			}
+			limit := intArg(args, "limit", 200)
+			if limit <= 0 {
+				limit = 200
+			}
+			var out strings.Builder
+			for i := offset - 1; i < len(lines) && i < offset-1+limit; i++ {
+				fmt.Fprintf(&out, "%6d\t%s\n", i+1, lines[i])
+			}
+			return out.String(), nil
+		},
+	}
+}
+
+// WriteConfig configures the write tool.
+type WriteConfig struct{ Root string }
+
+// Write returns a risky tool that creates or overwrites a file.
+func Write(cfg WriteConfig) Tool {
+	return Tool{
+		Name:        "write",
+		Description: "Create or overwrite a file with the full content.",
+		Schema: objectSchema(map[string]any{
+			"path":    map[string]any{"type": "string", "description": "file path"},
+			"content": map[string]any{"type": "string", "description": "full content"},
+		}, "path", "content"),
+		meta: map[string]any{"risk": "high"},
+		run: func(ctx context.Context, args map[string]any) (string, error) {
+			p, _ := args["path"].(string)
+			content, _ := args["content"].(string)
+			if p == "" {
+				return "", fmt.Errorf("path is required")
+			}
+			if err := envOf(ctx).WriteFile(ctx, fsRequest{Path: p, Root: cfg.Root, Data: []byte(content)}); err != nil {
+				return "", err
+			}
+			return "wrote " + p, nil
+		},
+	}
+}
+
+// EditConfig configures the edit tool.
+type EditConfig struct{ Root string }
+
+// Edit returns a risky tool that replaces one exact, unique string in a
+// file.
+func EditFile(cfg EditConfig) Tool {
+	return Tool{
+		Name:        "edit",
+		Description: "Replace one exact, unique string in a file.",
+		Schema: objectSchema(map[string]any{
+			"path": map[string]any{"type": "string", "description": "file path"},
+			"old":  map[string]any{"type": "string", "description": "exact text to replace"},
+			"new":  map[string]any{"type": "string", "description": "replacement"},
+		}, "path", "old", "new"),
+		meta: map[string]any{"risk": "high"},
+		run: func(ctx context.Context, args map[string]any) (string, error) {
+			p, _ := args["path"].(string)
+			old, _ := args["old"].(string)
+			next, _ := args["new"].(string)
+			if p == "" || old == "" {
+				return "", fmt.Errorf("path and old are required")
+			}
+			b, err := envOf(ctx).ReadFile(ctx, fsRequest{Path: p, Root: cfg.Root})
+			if err != nil {
+				return "", err
+			}
+			if n := strings.Count(string(b), old); n != 1 {
+				return "", fmt.Errorf("old text occurs %d times; it must occur exactly once", n)
+			}
+			updated := strings.Replace(string(b), old, next, 1)
+			if err := envOf(ctx).WriteFile(ctx, fsRequest{Path: p, Root: cfg.Root, Data: []byte(updated)}); err != nil {
+				return "", err
+			}
+			return "edited " + p, nil
+		},
+	}
+}
+
+// Sleep returns a tool that pauses for a bounded number of seconds.
+func Sleep(max time.Duration) Tool {
+	if max <= 0 {
+		max = 30 * time.Second
+	}
+	return Tool{
+		Name:        "sleep",
+		Description: fmt.Sprintf("Pause for a number of seconds (max %d).", int(max.Seconds())),
+		Schema: objectSchema(map[string]any{
+			"seconds": map[string]any{"type": "integer", "description": "seconds to sleep"},
+		}, "seconds"),
+		meta: map[string]any{"readonly": true},
+		run: func(ctx context.Context, args map[string]any) (string, error) {
+			secs := intArg(args, "seconds", 1)
+			if secs < 0 {
+				secs = 0
+			}
+			if time.Duration(secs)*time.Second > max {
+				secs = int(max.Seconds())
+			}
+			t := time.NewTimer(time.Duration(secs) * time.Second)
+			defer t.Stop()
+			select {
+			case <-ctx.Done():
+				return "", ctx.Err()
+			case <-t.C:
+			}
+			return fmt.Sprintf("slept %ds", secs), nil
+		},
+	}
+}
+
+// Stop returns a tool that ends the loop deliberately.
+func Stop() Tool {
+	return Tool{
+		Name:        "stop",
+		Description: "End the run. Use when the task is done and no more tools are needed.",
+		Schema: objectSchema(map[string]any{
+			"reason": map[string]any{"type": "string", "description": "why the run should stop"},
+		}),
+		meta: map[string]any{"readonly": true},
+		run: func(ctx context.Context, args map[string]any) (string, error) {
+			if st := StateFrom(ctx); st != nil {
+				st.Set("stop", true)
+			}
+			reason, _ := args["reason"].(string)
+			if reason == "" {
+				reason = "stopped"
+			}
+			return reason, nil
+		},
+	}
+}
+
+func intArg(args map[string]any, key string, def int) int {
+	switch v := args[key].(type) {
+	case float64:
+		return int(v)
+	case int:
+		return v
+	case int64:
+		return int(v)
+	}
+	return def
+}

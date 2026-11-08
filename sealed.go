@@ -17,14 +17,17 @@ import (
 
 // runParams is what the host sends to the box to start a run.
 type runParams struct {
-	Prompt     string         `json:"prompt"`
-	Thread     string         `json:"thread,omitempty"`
-	Messages   []Message      `json:"messages,omitempty"`
-	User       string         `json:"user,omitempty"`
-	Roles      []string       `json:"roles,omitempty"`
-	Images     []Image        `json:"images,omitempty"`
-	Schema     map[string]any `json:"schema,omitempty"`
-	SchemaName string         `json:"schema_name,omitempty"`
+	Prompt     string              `json:"prompt"`
+	Thread     string              `json:"thread,omitempty"`
+	Messages   []Message           `json:"messages,omitempty"`
+	Pending    []Interrupt         `json:"pending,omitempty"`
+	Paused     *PausedStep         `json:"paused,omitempty"`
+	Decisions  map[string]Decision `json:"decisions,omitempty"`
+	User       string              `json:"user,omitempty"`
+	Roles      []string            `json:"roles,omitempty"`
+	Images     []Image             `json:"images,omitempty"`
+	Schema     map[string]any      `json:"schema,omitempty"`
+	SchemaName string              `json:"schema_name,omitempty"`
 }
 
 type secretBinding struct {
@@ -89,6 +92,18 @@ func newSealed(cfg Config) (*Agent, error) {
 	}
 	bin := s.Binary
 	if bin == "" {
+		if _, local := s.Sandbox.(localSandbox); !local {
+			target := s.Platform
+			if target == "" {
+				target = "linux/amd64"
+			}
+			parts := strings.SplitN(target, "/", 2)
+			if len(parts) != 2 {
+				parts = []string{"linux", "amd64"}
+			}
+			_ = m.Close(context.Background())
+			return nil, fmt.Errorf("kritrim: this sealed sandbox needs a binary built for %s; set Sealed.Binary or run: GOOS=%s GOARCH=%s go build -o box <package>", target, parts[0], parts[1])
+		}
 		bin, err = os.Executable()
 		if err != nil {
 			_ = m.Close(ctx)
@@ -111,17 +126,43 @@ func newSealed(cfg Config) (*Agent, error) {
 		return nil, fmt.Errorf("kritrim: start box: %w", err)
 	}
 	a := &Agent{cfg: cfg, model: cfg.Model, session: cfg.Session, redactor: &redactor{}}
+	a.cfg.Tools = append([]Tool(nil), cfg.Tools...)
 	a.env = newHostEnv(a)
+	if err := a.connectMCP(ctx, cfg.MCP); err != nil {
+		_ = m.Close(context.Background())
+		return nil, err
+	}
 	b := &boxHost{a: a, p: newPeer(proc.Stdout(), proc.Stdin()), m: m, proc: proc, cfg: *s,
 		secrets: map[string]secretBinding{}}
+	b.cfg.Bridged = append([]string(nil), b.cfg.Bridged...)
+	b.cfg.Bridged = append(b.cfg.Bridged, a.mcpTools...)
 	b.register()
 	if err := b.p.call(ctx, "ping", nil, nil); err != nil {
 		_ = proc.Kill()
 		_ = m.Close(context.Background())
 		return nil, fmt.Errorf("kritrim: box did not start: %w", err)
 	}
+	if err := b.syncTools(ctx); err != nil {
+		_ = proc.Kill()
+		_ = m.Close(context.Background())
+		return nil, err
+	}
 	a.box = b
 	return a, nil
+}
+
+// syncTools sends the definitions of bridged host tools to the box.
+func (b *boxHost) syncTools(ctx context.Context) error {
+	var defs []Tool
+	for _, name := range b.cfg.Bridged {
+		if t, ok := b.a.tool(name); ok {
+			defs = append(defs, t)
+		}
+	}
+	if len(defs) == 0 {
+		return nil
+	}
+	return b.p.call(ctx, "tools.add", defs, nil)
 }
 
 func (b *boxHost) register() {
@@ -343,21 +384,23 @@ func (b *boxHost) run(ctx context.Context, prompt string, emit func(Event), o ru
 	}()
 
 	var msgs []Message
+	var pending []Interrupt
+	var paused *PausedStep
 	if o.thread != "" {
 		sess, err := b.a.session.Load(ctx, o.thread)
 		if err != nil {
 			return nil, err
 		}
 		if sess != nil {
-			msgs = sess.Messages
+			msgs, pending, paused = sess.Messages, sess.Pending, sess.Paused
 		}
 	}
 	schema, wrapped, err := outputSchema(o.output)
 	if err != nil {
 		return nil, err
 	}
-	params := runParams{Prompt: prompt, Thread: o.thread, Messages: msgs, User: o.user,
-		Roles: o.roles, Images: o.images, Schema: schema, SchemaName: "output"}
+	params := runParams{Prompt: prompt, Thread: o.thread, Messages: msgs, Pending: pending, Paused: paused,
+		Decisions: o.decisions, User: o.user, Roles: o.roles, Images: o.images, Schema: schema, SchemaName: "output"}
 	done := make(chan struct{})
 	go func() {
 		select {
@@ -373,7 +416,8 @@ func (b *boxHost) run(ctx context.Context, prompt string, emit func(Event), o ru
 		return nil, err
 	}
 	if o.thread != "" {
-		if err := b.a.session.Save(ctx, &Session{ID: o.thread, Messages: res.Messages, Updated: now()}); err != nil {
+		if err := b.a.session.Save(ctx, &Session{ID: o.thread, Messages: res.Messages,
+			Pending: res.Interrupts, Paused: res.Paused, Updated: now()}); err != nil {
 			return nil, err
 		}
 	}

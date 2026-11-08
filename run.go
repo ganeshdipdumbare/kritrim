@@ -247,6 +247,10 @@ func (a *Agent) loop(ctx context.Context, sess *Session, msgs []Message, ps *Pau
 			emit(Event{Type: "tool_result", ToolResult: &r, Step: step})
 		}
 		steps = append(steps, stepRec)
+		if st := StateFrom(ctx); st != nil && st.Get("stop") != nil {
+			stop = "stopped"
+			break
+		}
 	}
 
 	if o.output != nil {
@@ -303,7 +307,7 @@ func (a *Agent) pause(ctx context.Context, sess *Session, msgs []Message, ps *Pa
 	}
 	a.audit(ctx, o, "interrupt", "", fmt.Sprintf("pending=%d", len(ps.Interrupts)))
 	res := &Result{Text: text, Steps: steps, Usage: usage, Stop: "interrupt",
-		Interrupts: append([]Interrupt(nil), ps.Interrupts...), Messages: msgs, Thread: o.thread}
+		Interrupts: append([]Interrupt(nil), ps.Interrupts...), Paused: ps, Messages: msgs, Thread: o.thread}
 	emit(Event{Type: "finish", Usage: &usage})
 	return res, nil
 }
@@ -400,40 +404,69 @@ func (a *Agent) executeCall(ctx context.Context, o runOptions, call ToolCall, em
 }
 
 func (a *Agent) modelStream(ctx context.Context, req *Request, emit func(Event)) (*Response, error) {
-	emitted := false
-	for attempt := 0; ; attempt++ {
-		resp, err := a.model.Stream(ctx, *req, func(d Delta) {
-			emitted = true
-			if d.Text != "" {
-				emit(Event{Type: "text", Text: d.Text})
+	var last error
+	for i, m := range a.models() {
+		emitted := false
+		for attempt := 0; ; attempt++ {
+			resp, err := m.Stream(ctx, *req, func(d Delta) {
+				emitted = true
+				if d.Text != "" {
+					emit(Event{Type: "text", Text: d.Text})
+				}
+				if d.Reasoning != "" {
+					emit(Event{Type: "reasoning", Text: d.Reasoning})
+				}
+			})
+			if err == nil {
+				return resp, nil
 			}
-			if d.Reasoning != "" {
-				emit(Event{Type: "reasoning", Text: d.Reasoning})
+			if ctx.Err() != nil || emitted || !a.cfg.Retry.retryable(err) {
+				return nil, err
 			}
-		})
-		if err == nil {
-			return resp, nil
+			if attempt >= a.cfg.Retry.max()-1 {
+				last = err
+				break
+			}
+			logf(a.cfg, "model retry %d after %v", attempt+1, err)
+			a.cfg.Retry.wait(attempt)
 		}
-		if ctx.Err() != nil || emitted || attempt >= a.cfg.Retry.max()-1 || !a.cfg.Retry.retryable(err) {
-			return nil, err
+		if i < len(a.models())-1 {
+			logf(a.cfg, "falling back to the next model after %v", last)
 		}
-		logf(a.cfg, "model retry %d after %v", attempt+1, err)
-		a.cfg.Retry.wait(attempt)
 	}
+	return nil, last
 }
 
 func (a *Agent) modelGenerate(ctx context.Context, req *Request) (*Response, error) {
-	for attempt := 0; ; attempt++ {
-		resp, err := a.model.Generate(ctx, *req)
-		if err == nil {
-			return resp, nil
+	var last error
+	for _, m := range a.models() {
+		for attempt := 0; ; attempt++ {
+			resp, err := m.Generate(ctx, *req)
+			if err == nil {
+				return resp, nil
+			}
+			if ctx.Err() != nil || !a.cfg.Retry.retryable(err) {
+				return nil, err
+			}
+			if attempt >= a.cfg.Retry.max()-1 {
+				last = err
+				break
+			}
+			logf(a.cfg, "model retry %d after %v", attempt+1, err)
+			a.cfg.Retry.wait(attempt)
 		}
-		if ctx.Err() != nil || attempt >= a.cfg.Retry.max()-1 || !a.cfg.Retry.retryable(err) {
-			return nil, err
-		}
-		logf(a.cfg, "model retry %d after %v", attempt+1, err)
-		a.cfg.Retry.wait(attempt)
 	}
+	return nil, last
+}
+
+func (a *Agent) models() []Model {
+	out := []Model{a.model}
+	for _, m := range a.cfg.Fallback {
+		if m != nil {
+			out = append(out, m)
+		}
+	}
+	return out
 }
 
 func (a *Agent) saveSession(ctx context.Context, sess *Session, msgs []Message, o runOptions) error {

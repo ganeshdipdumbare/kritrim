@@ -222,6 +222,24 @@ func TestSessionConflict(t *testing.T) {
 	}
 }
 
+type failModel struct{}
+
+func (failModel) Generate(context.Context, Request) (*Response, error) {
+	return nil, &StatusError{Provider: "test", Code: 500, Status: "500 Internal Server Error"}
+}
+func (f failModel) Stream(ctx context.Context, req Request, emit func(Delta)) (*Response, error) {
+	return f.Generate(ctx, req)
+}
+
+func TestModelFallback(t *testing.T) {
+	a := newAgent(t, Config{Model: failModel{}, Fallback: []Model{Mock(Turn{Text: "ok"})},
+		Retry: &Retry{Max: 1, Base: time.Millisecond}})
+	res, err := a.Run(context.Background(), "x")
+	if err != nil || res.Text != "ok" {
+		t.Fatalf("%v %+v", err, res)
+	}
+}
+
 func TestAgentAsTool(t *testing.T) {
 	inner := newAgent(t, Config{Model: Mock(Turn{Text: "inner answer"})})
 	outer := newAgent(t, Config{
