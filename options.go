@@ -13,6 +13,7 @@ type runOptions struct {
 	roles  []string
 	// decisions resumes a paused thread, keyed by interrupt ID.
 	decisions map[string]Decision
+	onEvent   func(Event)
 
 	// schema is set by a sealed host so the box requests structured output
 	// without owning the caller's output type.
@@ -49,6 +50,9 @@ func Decisions(m map[string]Decision) Option {
 		}
 	}
 }
+
+// OnEvent observes a run without using Stream.
+func OnEvent(fn func(Event)) Option { return func(o *runOptions) { o.onEvent = fn } }
 
 func resolveOptions(opts []Option) runOptions {
 	var o runOptions

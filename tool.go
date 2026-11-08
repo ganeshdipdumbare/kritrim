@@ -71,6 +71,10 @@ func NewTool[In, Out any](name, description string, fn func(ctx context.Context,
 
 var validToolName = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 
+// SchemaOf derives a JSON Schema from a Go type. NewTool uses it; it is
+// exported for evaluators and advanced tools.
+func SchemaOf(v any) map[string]any { return schemaOf(v) }
+
 // Risky marks a tool so Config.Approve is asked before it runs.
 func Risky(t Tool) Tool {
 	t.meta = copyMeta(t.meta)

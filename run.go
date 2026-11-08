@@ -59,6 +59,9 @@ func (a *Agent) run(ctx context.Context, prompt string, emit func(Event), opts .
 		return a.box.run(ctx, prompt, emit, resolveOptions(opts))
 	}
 	o := resolveOptions(opts)
+	if o.onEvent != nil {
+		emit = o.onEvent
+	}
 	a.identity(&o)
 	if o.output != nil && reflect.TypeOf(o.output).Kind() != reflect.Pointer {
 		return nil, errors.New("kritrim: Output needs a pointer")
