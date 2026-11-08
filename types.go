@@ -79,12 +79,13 @@ type Event struct {
 
 // Result is the outcome of a run.
 type Result struct {
-	Text     string    `json:"text"`
-	Steps    []Step    `json:"steps"`
-	Usage    Usage     `json:"usage"`
-	Stop     string    `json:"stop"` // stop | max_steps | rejected
-	Messages []Message `json:"messages"`
-	Thread   string    `json:"thread,omitempty"`
+	Text       string      `json:"text"`
+	Steps      []Step      `json:"steps"`
+	Usage      Usage       `json:"usage"`
+	Stop       string      `json:"stop"` // stop | max_steps | interrupt
+	Interrupts []Interrupt `json:"interrupts,omitempty"`
+	Messages   []Message   `json:"messages"`
+	Thread     string      `json:"thread,omitempty"`
 }
 
 // ToolCalls returns every tool call made during the run.

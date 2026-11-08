@@ -42,6 +42,13 @@ type Config struct {
 	// Audit receives one hash-chained entry per model, tool and approval.
 	Audit AuditSink
 
+	// Hooks observe and shape runs, model calls and tool calls.
+	Hooks Hooks
+	// Retry configures model retries. nil uses three attempts with backoff.
+	Retry *Retry
+	// Context keeps the prompt within a token budget; nil means no trimming.
+	Context *ContextConfig
+
 	// Sandbox runs Shell and Files inside the sandbox instead of the host.
 	Sandbox Sandbox
 
@@ -155,6 +162,27 @@ func New(cfg Config) (*Agent, error) {
 	}
 	a.env = newHostEnv(a)
 	return a, nil
+}
+
+// AsTool exposes the agent as a tool another agent can call. The sub-agent
+// runs in its own thread and inherits the caller's identity.
+func (a *Agent) AsTool(name, description string) Tool {
+	return NewTool(name, description, func(ctx context.Context, in struct {
+		Task string `json:"task" desc:"the task, with all context it needs"`
+	}) (string, error) {
+		thread := ThreadFrom(ctx)
+		if thread != "" {
+			thread += "/" + name
+		}
+		res, err := a.Run(ctx, in.Task, Thread(thread), User(UserFrom(ctx)), Roles(RolesFrom(ctx)...))
+		if err != nil {
+			return "", err
+		}
+		if res.Stop == "interrupt" {
+			return "", fmt.Errorf("%s needs approval; ask the user", name)
+		}
+		return res.Text, nil
+	})
 }
 
 // Close releases the sandbox and the sealed box. Safe to call twice.

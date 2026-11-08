@@ -100,7 +100,7 @@ func (m *anthropicModel) do(ctx context.Context, req Request, stream bool, emit 
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return nil, fmt.Errorf("kritrim: %s: %s: %s", m.Name(), resp.Status, strings.TrimSpace(string(msg)))
+		return nil, &StatusError{Provider: m.Name(), Code: resp.StatusCode, Status: resp.Status, Body: strings.TrimSpace(string(msg))}
 	}
 	if !stream {
 		var raw struct {

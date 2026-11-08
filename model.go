@@ -3,6 +3,7 @@ package kritrim
 import (
 	"context"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -76,4 +77,17 @@ func first(cfg []ModelConfig) ModelConfig {
 		return cfg[0]
 	}
 	return ModelConfig{}
+}
+
+// StatusError is a non-2xx provider response. Retry uses Code to decide
+// whether another attempt may succeed.
+type StatusError struct {
+	Provider string
+	Code     int
+	Status   string
+	Body     string
+}
+
+func (e *StatusError) Error() string {
+	return "kritrim: " + e.Provider + ": " + e.Status + ": " + strings.TrimSpace(e.Body)
 }

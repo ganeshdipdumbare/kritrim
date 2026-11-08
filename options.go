@@ -11,6 +11,8 @@ type runOptions struct {
 	images []Image
 	user   string
 	roles  []string
+	// decisions resumes a paused thread, keyed by interrupt ID.
+	decisions map[string]Decision
 
 	// schema is set by a sealed host so the box requests structured output
 	// without owning the caller's output type.
@@ -36,6 +38,16 @@ func User(id string) Option { return func(o *runOptions) { o.user = id } }
 // Roles sets the roles recorded for the run.
 func Roles(roles ...string) Option {
 	return func(o *runOptions) { o.roles = append([]string(nil), roles...) }
+}
+
+// Decisions resumes a thread paused on interrupts. Keys are Interrupt.ID.
+func Decisions(m map[string]Decision) Option {
+	return func(o *runOptions) {
+		o.decisions = make(map[string]Decision, len(m))
+		for k, v := range m {
+			o.decisions[k] = v
+		}
+	}
 }
 
 func resolveOptions(opts []Option) runOptions {
