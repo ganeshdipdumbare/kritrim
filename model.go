@@ -27,6 +27,9 @@ type Request struct {
 	ToolChoice  string // "", "auto" or "none"
 	Schema      map[string]any
 	SchemaName  string
+	// Cache asks providers that support it to cache the system prompt and
+	// tools (Anthropic cache_control).
+	Cache bool
 }
 
 // Delta is a partial model output.

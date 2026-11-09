@@ -14,6 +14,8 @@ type runOptions struct {
 	// decisions resumes a paused thread, keyed by interrupt ID.
 	decisions map[string]Decision
 	onEvent   func(Event)
+	runID     string
+	idemKey   string
 
 	// schema is set by a sealed host so the box requests structured output
 	// without owning the caller's output type.
@@ -53,6 +55,13 @@ func Decisions(m map[string]Decision) Option {
 
 // OnEvent observes a run without using Stream.
 func OnEvent(fn func(Event)) Option { return func(o *runOptions) { o.onEvent = fn } }
+
+// RunID names a run so Agent.Cancel can stop it.
+func RunID(id string) Option { return func(o *runOptions) { o.runID = id } }
+
+// Idempotency deduplicates concurrent runs with the same key. The second
+// caller waits for the first result.
+func Idempotency(key string) Option { return func(o *runOptions) { o.idemKey = key } }
 
 func resolveOptions(opts []Option) runOptions {
 	var o runOptions

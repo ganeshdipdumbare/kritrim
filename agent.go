@@ -34,6 +34,13 @@ type Config struct {
 
 	// Tools are the tools the model may call.
 	Tools []Tool
+	// ToolConcurrency runs multiple tool calls from one model step in
+	// parallel. Default 1 (sequential). Risky tools always run
+	// sequentially so approvals stay ordered.
+	ToolConcurrency int
+	// PromptCache asks providers that support it to cache the system
+	// prompt and tools.
+	PromptCache bool
 	// MCP connects MCP servers at startup. Their tools are added to Tools.
 	MCP []MCPConfig
 
@@ -129,6 +136,21 @@ type Agent struct {
 	mcpTools []string
 	shared   *Agent
 	close    sync.Once
+
+	cancelMu sync.Mutex
+	cancels  map[string]context.CancelFunc
+
+	idemMu sync.Mutex
+	idem   map[string]*idemEntry
+
+	auditMu sync.Mutex
+}
+
+type idemEntry struct {
+	done    chan struct{}
+	res     *Result
+	err     error
+	expires time.Time
 }
 
 // New validates the configuration and starts the agent. Nothing runs until

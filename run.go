@@ -10,6 +10,7 @@ import (
 	"iter"
 	"reflect"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -66,6 +67,29 @@ func (a *Agent) run(ctx context.Context, prompt string, emit func(Event), opts .
 	if o.output != nil && reflect.TypeOf(o.output).Kind() != reflect.Pointer {
 		return nil, errors.New("kritrim: Output needs a pointer")
 	}
+	if o.idemKey != "" {
+		e, leader := a.idemBegin(o.idemKey)
+		if !leader {
+			select {
+			case <-e.done:
+				return e.res, e.err
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
+		defer func() { a.idemFinish(o.idemKey, e, res, err) }()
+	}
+
+	runID := o.runID
+	if runID == "" {
+		runID = newID()
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	a.registerRun(runID, cancel)
+	defer a.unregisterRun(runID)
+	o.runID = runID
+	ctx = a.runContext(ctx, o, runID, nil)
 
 	var sess *Session
 	if o.thread != "" {
@@ -77,7 +101,7 @@ func (a *Agent) run(ctx context.Context, prompt string, emit func(Event), opts .
 	if sess == nil {
 		sess = &Session{ID: o.thread}
 	}
-	ctx = a.runContext(ctx, o, newID(), newState(sess.Values))
+	ctx = context.WithValue(ctx, keyState, newState(sess.Values))
 
 	ev := &RunEvent{Prompt: prompt, Thread: o.thread, User: o.user}
 	if herr := a.cfg.Hooks.beforeRun(ctx, ev); herr != nil {
@@ -145,7 +169,7 @@ func (a *Agent) interruptResult(sess *Session, o runOptions) *Result {
 		}
 	}
 	return &Result{Text: text, Stop: "interrupt", Interrupts: append([]Interrupt(nil), sess.Pending...),
-		Messages: append([]Message(nil), sess.Messages...), Thread: o.thread}
+		Messages: append([]Message(nil), sess.Messages...), Thread: o.thread, RunID: o.runID}
 }
 
 func (a *Agent) loop(ctx context.Context, sess *Session, msgs []Message, ps *PausedStep, o runOptions, emit func(Event)) (*Result, error) {
@@ -193,6 +217,7 @@ func (a *Agent) loop(ctx context.Context, sess *Session, msgs []Message, ps *Pau
 			ToolChoice:  a.cfg.ToolChoice,
 			Schema:      schema,
 			SchemaName:  "output",
+			Cache:       a.cfg.PromptCache,
 		}
 		req.Messages, err = trimContext(ctx, msgs, a.cfg.Context)
 		if err != nil {
@@ -229,22 +254,37 @@ func (a *Agent) loop(ctx context.Context, sess *Session, msgs []Message, ps *Pau
 			break
 		}
 		emit(Event{Type: "step_end", Step: step, Usage: &resp.Usage})
-		for i, call := range resp.ToolCalls {
-			toolCalls++
-			if toolCalls > a.cfg.Limits.ToolCalls {
-				return nil, fmt.Errorf("kritrim: tool call limit %d exceeded", a.cfg.Limits.ToolCalls)
+		if toolCalls+len(resp.ToolCalls) > a.cfg.Limits.ToolCalls {
+			return nil, fmt.Errorf("kritrim: tool call limit %d exceeded", a.cfg.Limits.ToolCalls)
+		}
+		toolCalls += len(resp.ToolCalls)
+		if a.cfg.ToolConcurrency > 1 && len(resp.ToolCalls) > 1 && !a.anyRisky(resp.ToolCalls) {
+			for _, call := range resp.ToolCalls {
+				c := call
+				emit(Event{Type: "tool_call", ToolCall: &c, Step: step})
 			}
-			c := call
-			emit(Event{Type: "tool_call", ToolCall: &c, Step: step})
-			res, pause := a.executeCall(ctx, o, call, emit)
-			if pause != nil {
-				ps := &PausedStep{Assistant: assistant, Calls: resp.ToolCalls, Results: stepRec.ToolResults, Index: i}
-				return a.pause(ctx, sess, msgs, ps, i, o, emit, usage, steps, text)
+			results := a.executeParallel(ctx, o, resp.ToolCalls)
+			for i, call := range resp.ToolCalls {
+				res := results[i]
+				stepRec.ToolResults = append(stepRec.ToolResults, res)
+				msgs = append(msgs, toolMessage(call, res))
+				r := res
+				emit(Event{Type: "tool_result", ToolResult: &r, Step: step})
 			}
-			stepRec.ToolResults = append(stepRec.ToolResults, res)
-			msgs = append(msgs, toolMessage(call, res))
-			r := res
-			emit(Event{Type: "tool_result", ToolResult: &r, Step: step})
+		} else {
+			for i, call := range resp.ToolCalls {
+				c := call
+				emit(Event{Type: "tool_call", ToolCall: &c, Step: step})
+				res, pause := a.executeCall(ctx, o, call, emit)
+				if pause != nil {
+					ps := &PausedStep{Assistant: assistant, Calls: resp.ToolCalls, Results: stepRec.ToolResults, Index: i}
+					return a.pause(ctx, sess, msgs, ps, i, o, emit, usage, steps, text)
+				}
+				stepRec.ToolResults = append(stepRec.ToolResults, res)
+				msgs = append(msgs, toolMessage(call, res))
+				r := res
+				emit(Event{Type: "tool_result", ToolResult: &r, Step: step})
+			}
 		}
 		steps = append(steps, stepRec)
 		if st := StateFrom(ctx); st != nil && st.Get("stop") != nil {
@@ -264,6 +304,7 @@ func (a *Agent) loop(ctx context.Context, sess *Session, msgs []Message, ps *Pau
 				ToolChoice:  "none",
 				Schema:      schema,
 				SchemaName:  "output",
+				Cache:       a.cfg.PromptCache,
 			}
 			resp, rerr := a.modelGenerate(ctx, &req)
 			if rerr == nil {
@@ -281,7 +322,7 @@ func (a *Agent) loop(ctx context.Context, sess *Session, msgs []Message, ps *Pau
 	if err := a.saveSession(ctx, sess, msgs, o); err != nil {
 		return nil, err
 	}
-	res := &Result{Text: text, Steps: steps, Usage: usage, Stop: stop, Messages: msgs, Thread: o.thread}
+	res := &Result{Text: text, Steps: steps, Usage: usage, Stop: stop, Messages: msgs, Thread: o.thread, RunID: o.runID}
 	emit(Event{Type: "finish", Usage: &usage})
 	a.audit(ctx, o, "run", "", "stop="+stop)
 	return res, nil
@@ -307,7 +348,7 @@ func (a *Agent) pause(ctx context.Context, sess *Session, msgs []Message, ps *Pa
 	}
 	a.audit(ctx, o, "interrupt", "", fmt.Sprintf("pending=%d", len(ps.Interrupts)))
 	res := &Result{Text: text, Steps: steps, Usage: usage, Stop: "interrupt",
-		Interrupts: append([]Interrupt(nil), ps.Interrupts...), Paused: ps, Messages: msgs, Thread: o.thread}
+		Interrupts: append([]Interrupt(nil), ps.Interrupts...), Paused: ps, Messages: msgs, Thread: o.thread, RunID: o.runID}
 	emit(Event{Type: "finish", Usage: &usage})
 	return res, nil
 }
@@ -329,6 +370,37 @@ func (a *Agent) pendingInterrupts(calls []ToolCall, decisions map[string]Decisio
 		out = append(out, Interrupt{ID: c.ID, Name: "approval", Tool: c.Name, CallID: c.ID,
 			Args: c.Args, Message: fmt.Sprintf("Approve %s with %s?", c.Name, jsonString(c.Args))})
 	}
+	return out
+}
+
+func (a *Agent) anyRisky(calls []ToolCall) bool {
+	for _, c := range calls {
+		if t, ok := a.tool(c.Name); ok && t.risky() {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *Agent) executeParallel(ctx context.Context, o runOptions, calls []ToolCall) []ToolResult {
+	n := a.cfg.ToolConcurrency
+	if n > len(calls) {
+		n = len(calls)
+	}
+	out := make([]ToolResult, len(calls))
+	sem := make(chan struct{}, n)
+	var wg sync.WaitGroup
+	for i, call := range calls {
+		wg.Add(1)
+		go func(i int, call ToolCall) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			res, _ := a.executeCall(ctx, o, call, func(Event) {})
+			out[i] = res
+		}(i, call)
+	}
+	wg.Wait()
 	return out
 }
 
@@ -506,7 +578,10 @@ func (a *Agent) audit(ctx context.Context, o runOptions, kind, name, detail stri
 	}
 	e := Entry{Time: now().UnixMilli(), Kind: kind, Name: name, Detail: a.redactor.redact(detail),
 		Run: RunIDFrom(ctx), Thread: o.thread, User: o.user}
-	if err := a.cfg.Audit.Write(ctx, e); err != nil {
+	a.auditMu.Lock()
+	err := a.cfg.Audit.Write(ctx, e)
+	a.auditMu.Unlock()
+	if err != nil {
 		logf(a.cfg, "audit: %v", err)
 	}
 }

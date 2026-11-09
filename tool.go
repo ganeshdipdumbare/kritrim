@@ -71,6 +71,27 @@ func NewTool[In, Out any](name, description string, fn func(ctx context.Context,
 
 var validToolName = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 
+// NewRawTool builds a tool from a JSON Schema and an untyped function. Use it
+// for dynamic schemas (MCP servers, simulators); NewTool is the normal path.
+func NewRawTool(name, description string, schema map[string]any, fn func(ctx context.Context, args map[string]any) (string, error)) Tool {
+	t := Tool{Name: name, Description: description, Schema: schema}
+	switch {
+	case !validToolName.MatchString(name):
+		t.err = fmt.Errorf("kritrim: tool name %q must use letters, digits, '_' or '-'", name)
+	case fn == nil:
+		t.err = fmt.Errorf("kritrim: tool %q has a nil function", name)
+	case schema == nil:
+		t.err = fmt.Errorf("kritrim: tool %q has a nil schema", name)
+	default:
+		if err := jsonschema.Validate(schema); err != nil {
+			t.err = fmt.Errorf("kritrim: tool %q schema: %w", name, err)
+			return t
+		}
+		t.run = fn
+	}
+	return t
+}
+
 // SchemaOf derives a JSON Schema from a Go type. NewTool uses it; it is
 // exported for evaluators and advanced tools.
 func SchemaOf(v any) map[string]any { return schemaOf(v) }

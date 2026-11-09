@@ -52,7 +52,7 @@ type anMsg struct {
 type anRequest struct {
 	Model       string   `json:"model"`
 	MaxTokens   int      `json:"max_tokens"`
-	System      string   `json:"system,omitempty"`
+	System      any      `json:"system,omitempty"`
 	Messages    []anMsg  `json:"messages"`
 	Tools       []anTool `json:"tools,omitempty"`
 	ToolChoice  any      `json:"tool_choice,omitempty"`
@@ -61,9 +61,10 @@ type anRequest struct {
 }
 
 type anTool struct {
-	Name        string         `json:"name"`
-	Description string         `json:"description,omitempty"`
-	InputSchema map[string]any `json:"input_schema"`
+	Name         string         `json:"name"`
+	Description  string         `json:"description,omitempty"`
+	InputSchema  map[string]any `json:"input_schema"`
+	CacheControl map[string]any `json:"cache_control,omitempty"`
 }
 
 func (m *anthropicModel) Generate(ctx context.Context, req Request) (*Response, error) {
@@ -126,7 +127,14 @@ func (m *anthropicModel) request(req Request, stream bool) anRequest {
 	if max == 0 {
 		max = 4096
 	}
-	out := anRequest{Model: m.name, MaxTokens: max, System: req.System, Temperature: req.Temperature, Stream: stream}
+	out := anRequest{Model: m.name, MaxTokens: max, Temperature: req.Temperature, Stream: stream}
+	if req.System != "" {
+		if req.Cache {
+			out.System = []any{map[string]any{"type": "text", "text": req.System, "cache_control": map[string]any{"type": "ephemeral"}}}
+		} else {
+			out.System = req.System
+		}
+	}
 	for _, msg := range req.Messages {
 		out.Messages = appendAn(out.Messages, msg)
 	}
@@ -138,6 +146,9 @@ func (m *anthropicModel) request(req Request, stream bool) anRequest {
 		out.ToolChoice = map[string]any{"type": "none"}
 	case "auto":
 		out.ToolChoice = map[string]any{"type": "auto"}
+	}
+	if req.Cache && len(out.Tools) > 0 {
+		out.Tools[len(out.Tools)-1].CacheControl = map[string]any{"type": "ephemeral"}
 	}
 	if req.Schema != nil {
 		name := req.SchemaName

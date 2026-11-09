@@ -87,6 +87,7 @@ type Result struct {
 	Paused     *PausedStep `json:"paused,omitempty"`
 	Messages   []Message   `json:"messages"`
 	Thread     string      `json:"thread,omitempty"`
+	RunID      string      `json:"run_id,omitempty"`
 }
 
 // ToolCalls returns every tool call made during the run.
