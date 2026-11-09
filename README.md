@@ -230,8 +230,8 @@ kritrim.StateFrom(ctx).Set("seen", true)
 - **Tamper-evident audit.** Hash-chained JSON lines; `VerifyAudit` checks them.
 - **PII hooks.** `guard.PII("email", "credit_card")` redacts prompts, replies
   and tool results.
-- **Tracing.** `trace.JSON(w)` writes one line per run/model/tool event; the
-  same hooks plug into any exporter.
+- **Tracing.** `trace.JSON(w)` writes one line per run/model/tool event;
+  `trace.OTLP(...)` exports one OTLP/HTTP trace per run to a collector.
 - **User Go tools are your code.** The broker governs built-in tools; put
   untrusted work in a sandbox.
 
@@ -380,8 +380,9 @@ fmt.Print(report.Summary())
 ```
 
 Deterministic evaluators, tool-trajectory checks, token/latency budgets, an
-LLM judge, detectors, a JSON/Markdown report and a disk cache. The CLI renders
-and diagnoses reports:
+LLM judge, detectors, a JSON/Markdown report and a disk cache. `evals.RunRedTeam`
+runs prompt-injection, exfiltration and destructive-tool probes. The CLI
+renders and diagnoses reports:
 
 ```bash
 go run ./cmd/kritrim-evals report report.json
@@ -419,6 +420,9 @@ go run ./examples/quickstart
 go run ./examples/tools
 go run ./examples/full
 go run ./examples/sealed
+go run ./examples/a2a
+go run ./examples/evals
+go run ./examples/multiagent
 ```
 
 ## Test

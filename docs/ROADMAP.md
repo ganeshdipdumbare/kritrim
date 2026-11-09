@@ -93,13 +93,14 @@ A2A agents as graph nodes (wrap `client.Run`), workflow presets.
 
 Shipped:
 - `guard.PII` hooks (email, phone, card, SSN, IPv4).
-- `trace.JSON` lifecycle hooks.
+- `trace.JSON` lifecycle hooks and `trace.OTLP` OTLP/HTTP trace export.
 - `Config.Fallback` model routing on retryable failures.
 - Helpers for DeepSeek, Groq, Mistral, OpenRouter, LiteLLM.
+- Evals red-team probes (injection, exfiltration, destructive tools).
 
-**Still open:** OTel exporter (the hooks are the seam), Bedrock and OpenAI
-Responses providers, prompt caching, Cedar-style authorization, steering,
-notebook/handoff/python vended tools, voice/bidi.
+**Still open:** Bedrock and OpenAI Responses providers, prompt caching,
+Cedar-style authorization, steering, notebook/handoff/python vended tools,
+voice/bidi.
 
 ## v1.0 — freeze
 
