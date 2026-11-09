@@ -28,6 +28,19 @@ func Inject(fn func(ctx context.Context) string) kritrim.Hooks {
 	}
 }
 
+// Steer appends a user message to the next model call without storing it in
+// history. Use it for just-in-time guidance.
+func Steer(fn func(ctx context.Context) string) kritrim.Hooks {
+	return kritrim.Hooks{
+		BeforeModel: func(ctx context.Context, e *kritrim.ModelEvent) error {
+			if s := fn(ctx); s != "" {
+				e.Request.Messages = append(e.Request.Messages, kritrim.Message{Role: kritrim.RoleUser, Content: s})
+			}
+			return nil
+		},
+	}
+}
+
 // Offload moves large tool results to files and returns a read_offloaded
 // tool. Add the tool to Config.Tools; the hook rewrites results above
 // threshold bytes.

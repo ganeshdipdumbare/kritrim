@@ -128,13 +128,17 @@ func (s *fileStore) flush() error {
 
 func search(m map[string]Item, query string, limit int) []Item {
 	q := strings.ToLower(strings.TrimSpace(query))
+	terms := strings.Fields(q)
 	var out []Item
 	for _, it := range m {
 		score := 0
 		if q == "" {
 			score = 1
 		} else {
-			score = strings.Count(strings.ToLower(it.Key), q)*2 + strings.Count(strings.ToLower(it.Value), q)
+			key, val := strings.ToLower(it.Key), strings.ToLower(it.Value)
+			for _, term := range terms {
+				score += strings.Count(key, term)*2 + strings.Count(val, term)
+			}
 		}
 		if score > 0 {
 			out = append(out, it)
@@ -150,6 +154,39 @@ func search(m map[string]Item, query string, limit int) []Item {
 		out = out[:limit]
 	}
 	return out
+}
+
+// Inject recalls memories for the latest user message and adds them to the
+// system prompt before each model call. It does not store anything.
+func Inject(s Store, limit int) kritrim.Hooks {
+	if limit <= 0 {
+		limit = 5
+	}
+	return kritrim.Hooks{
+		BeforeModel: func(ctx context.Context, e *kritrim.ModelEvent) error {
+			var q string
+			for i := len(e.Request.Messages) - 1; i >= 0; i-- {
+				if e.Request.Messages[i].Role == kritrim.RoleUser {
+					q = e.Request.Messages[i].Content
+					break
+				}
+			}
+			if q == "" {
+				return nil
+			}
+			items, err := s.Search(ctx, q, limit)
+			if err != nil || len(items) == 0 {
+				return nil
+			}
+			var b strings.Builder
+			b.WriteString("\n\nRelevant memories:\n")
+			for _, it := range items {
+				fmt.Fprintf(&b, "- %s: %s\n", it.Key, it.Value)
+			}
+			e.Request.System = strings.TrimSpace(e.Request.System + b.String())
+			return nil
+		},
+	}
 }
 
 // Tools returns remember and recall tools backed by s.

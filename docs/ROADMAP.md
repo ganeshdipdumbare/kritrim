@@ -107,8 +107,8 @@ Shipped:
 
 **Still open:** E2B/microsandbox/Firecracker/Tensorlake sandbox adapters, A2A
 push notifications and file parts, OpenAI Responses, Cedar-style
-authorization, steering, python vended tools, voice/bidi, evals CLI
-run/generate and remote traces.
+authorization, python vended tools, voice/bidi, evals CLI run/generate and
+remote traces.
 
 ## v0.7 — parity pass (shipped)
 
@@ -127,6 +127,7 @@ run/generate and remote traces.
   (Docker/Local/SSH) streams exec output.
 - Evals: `SimulatedTools` fixture tools.
 - A2A OAuth client credentials; `Notebook` and `AskUser` tools.
+- Memory injection (`memory.Inject`) and steering (`plugin.Steer`).
 
 **Gate:** parallel timing test; direct call; fork conflict; cancel; idempotency
 single model call; skills/offload/inject/deny tests; Bedrock request/signature

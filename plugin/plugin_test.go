@@ -37,6 +37,24 @@ func (m *spyModel) Stream(ctx context.Context, req kritrim.Request, emit func(kr
 	return m.Generate(ctx, req)
 }
 
+func TestSteer(t *testing.T) {
+	m := &spyModel{}
+	a, err := kritrim.New(kritrim.Config{Model: m, Hooks: Steer(func(ctx context.Context) string {
+		return "remember to be brief"
+	})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	if _, err := a.Run(context.Background(), "hi"); err != nil {
+		t.Fatal(err)
+	}
+	last := m.reqs[0].Messages[len(m.reqs[0].Messages)-1]
+	if last.Role != kritrim.RoleUser || last.Content != "remember to be brief" {
+		t.Fatalf("%+v", last)
+	}
+}
+
 func TestOffload(t *testing.T) {
 	dir := t.TempDir()
 	hooks, tool := Offload(dir, 100)

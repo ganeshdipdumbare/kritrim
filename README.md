@@ -422,7 +422,8 @@ a, _ := kritrim.New(kritrim.Config{
 ```
 
 `plugin.Offload(dir, bytes)` moves large tool results to files and returns a
-`read_offloaded` tool. `guard.Deny(pattern, reason)` blocks matching prompts;
+`read_offloaded` tool. `plugin.Steer` adds just-in-time guidance to the next
+model call. `guard.Deny(pattern, reason)` blocks matching prompts;
 `guard.PII(...)` redacts personal data.
 
 ## Triggers
@@ -447,7 +448,8 @@ a, _ := kritrim.New(kritrim.Config{Model: "…", Tools: memory.Tools(store)})
 ```
 
 `remember` and `recall` tools backed by a lexical memory store (memory or
-file). No vector database.
+file). `memory.Inject(store, n)` recalls relevant facts into the system prompt
+before each model call. No vector database.
 
 ## Examples
 
@@ -479,5 +481,4 @@ mode, MCP, A2A, evals, graph/swarm, triggers, memory, skills, plugins, notebook.
 
 Not shipped yet: E2B/microsandbox/Firecracker/Tensorlake sandbox adapters (the
 conformance kit and interface are ready), A2A push notifications and file
-parts, OpenAI Responses, Cedar-style authorization, steering, python tools,
-voice. See [`docs/ROADMAP.md`](docs/ROADMAP.md).
+parts, OpenAI Responses, Cedar-style authorization, python tools, voice. See [`docs/ROADMAP.md`](docs/ROADMAP.md).
