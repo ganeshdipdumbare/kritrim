@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
-	"time"
 )
 
 // SQLConfig configures a SQL session store.
@@ -101,7 +100,7 @@ func (s *sqlSessions) Save(ctx context.Context, v *Session) error {
 	if v.Version == 0 {
 		q := fmt.Sprintf("INSERT INTO %s (id, version, updated, data) VALUES (%s, %s, %s, %s)",
 			s.cfg.Table, s.ph(1), s.ph(2), s.ph(3), s.ph(4))
-		if _, err := s.db.ExecContext(ctx, q, id, 1, v.Updated.Format(time.RFC3339Nano), mustJSON(v)); err != nil {
+		if _, err := s.db.ExecContext(ctx, q, id, 1, v.Updated, string(mustJSON(v))); err != nil {
 			if isDuplicate(err) {
 				return ErrSessionConflict
 			}
@@ -112,7 +111,7 @@ func (s *sqlSessions) Save(ctx context.Context, v *Session) error {
 	}
 	q := fmt.Sprintf("UPDATE %s SET version = version + 1, updated = %s, data = %s WHERE id = %s AND version = %s",
 		s.cfg.Table, s.ph(1), s.ph(2), s.ph(3), s.ph(4))
-	res, err := s.db.ExecContext(ctx, q, v.Updated.Format(time.RFC3339Nano), mustJSON(v), id, v.Version)
+	res, err := s.db.ExecContext(ctx, q, v.Updated, string(mustJSON(v)), id, v.Version)
 	if err != nil {
 		return err
 	}

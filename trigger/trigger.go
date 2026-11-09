@@ -189,6 +189,9 @@ func (h *webhook) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if key != "" {
 		h.mu.Lock()
+		if len(h.seen) > 10000 { // shortcut: fixed cap, use a TTL store for long-lived servers
+			h.seen = map[string]string{}
+		}
 		h.seen[key] = res.Text
 		h.mu.Unlock()
 	}

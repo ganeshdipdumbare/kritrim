@@ -85,6 +85,6 @@ func (s *sqlTasks) Put(ctx context.Context, t *Task) error {
 	default:
 		q = fmt.Sprintf(`INSERT INTO %s (id, data) VALUES ($1, $2) ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data`, s.cfg.Table)
 	}
-	_, err = s.db.ExecContext(ctx, q, t.ID, b)
+	_, err = s.db.ExecContext(ctx, q, t.ID, string(b))
 	return err
 }
