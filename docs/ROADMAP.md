@@ -39,8 +39,7 @@ pause and resume across a real box restart (`internal/boxtest`).
 **Gate:** in-process client↔server card/send/stream; interrupt round-trip;
 auth rejection; context isolation.
 
-**Still open:** push notifications, file parts, OAuth/SigV4. SQL task store is
-available via `a2a.SQLTasks`.
+**Still open:** file parts. SQL task store is available via `a2a.SQLTasks`.
 
 ### Evals (`evals/`, `cmd/kritrim-evals`)
 - `Case`, `Experiment`, `Report`, bounded concurrency, `DirCache`.
@@ -76,8 +75,8 @@ concurrency; report rendering; generator/simulator/red-team tests.
 **Gate:** MCP stdio helper + HTTP server tests; Docker/Local conformance;
 `go run ./cmd/kritrim box build`; sealed example.
 
-**Still open:** E2B/microsandbox/Firecracker/Tensorlake/Daytona adapters; A2A
-SQL tasks; SSH adapter live test (skipped without a host).
+**Still open:** E2B/microsandbox/Firecracker/Tensorlake/Daytona adapters; SSH
+adapter live test (skipped without a host).
 
 ## v0.5 — multi-agent + triggers + memory (shipped)
 
@@ -94,7 +93,7 @@ webhook signature + duplicate test; memory tool test.
 **Still open:** cron expressions with named schedules, SQL trigger idempotency,
 A2A agents as graph nodes (wrap `client.Run`), workflow presets.
 
-## v0.6 — safety, observability, models (partly shipped)
+## v0.6 — safety, observability, models (shipped)
 
 Shipped:
 - `guard.PII` hooks (email, phone, card, SSN, IPv4).
@@ -135,7 +134,9 @@ CLI run/generate and remote traces.
 
 **Gate:** parallel timing test; direct call; fork conflict; cancel; idempotency
 single model call; skills/offload/inject/deny tests; Bedrock request/signature
-tests; prompt-cache body test; Docker attach and streamed-exec tests.
+tests; prompt-cache body test; Docker attach and streamed-exec tests; A2A
+push webhook test; OpenAI Responses text/tool/stream/schema tests; OTel
+traces/metrics/logs export test.
 
 ## v1.0 — freeze
 
