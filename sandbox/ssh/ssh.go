@@ -6,6 +6,8 @@
 package ssh
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -144,6 +146,56 @@ func (m *machine) Exec(ctx context.Context, req kritrim.ExecRequest) (kritrim.Ex
 		return res, err
 	}
 	return res, nil
+}
+
+func (m *machine) ExecStream(ctx context.Context, req kritrim.ExecRequest, emit func(stdout, stderr string)) (kritrim.ExecResult, error) {
+	remote := m.command(req.Command, req.Dir, req.Env)
+	cmd := exec.CommandContext(ctx, "ssh", (&sandbox{cfg: m.cfg}).args(remote)...)
+	if req.Stdin != nil {
+		cmd.Stdin = bytes.NewReader(req.Stdin)
+	}
+	out, err := cmd.StdoutPipe()
+	if err != nil {
+		return kritrim.ExecResult{}, err
+	}
+	errb, err := cmd.StderrPipe()
+	if err != nil {
+		return kritrim.ExecResult{}, err
+	}
+	if err := cmd.Start(); err != nil {
+		return kritrim.ExecResult{}, err
+	}
+	var wg sync.WaitGroup
+	var o, e strings.Builder
+	scan := func(rd io.Reader, dst *strings.Builder, isErr bool) {
+		defer wg.Done()
+		sc := bufio.NewScanner(rd)
+		for sc.Scan() {
+			line := sc.Text() + "\n"
+			dst.WriteString(line)
+			if emit != nil {
+				if isErr {
+					emit("", line)
+				} else {
+					emit(line, "")
+				}
+			}
+		}
+	}
+	wg.Add(2)
+	go scan(out, &o, false)
+	go scan(errb, &e, true)
+	wg.Wait()
+	code := 0
+	if werr := cmd.Wait(); werr != nil {
+		var ee *exec.ExitError
+		if errors.As(werr, &ee) {
+			code = ee.ExitCode()
+		} else {
+			return kritrim.ExecResult{}, werr
+		}
+	}
+	return kritrim.ExecResult{Stdout: o.String(), Stderr: e.String(), Exit: code}, nil
 }
 
 func (m *machine) Start(ctx context.Context, req kritrim.StartRequest) (kritrim.Process, error) {

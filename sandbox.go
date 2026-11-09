@@ -29,6 +29,12 @@ type Machine interface {
 	Close(ctx context.Context) error
 }
 
+// StreamingMachine is an optional capability: exec while emitting output
+// chunks. Docker, Local and SSH implement it.
+type StreamingMachine interface {
+	ExecStream(ctx context.Context, req ExecRequest, emit func(stdout, stderr string)) (ExecResult, error)
+}
+
 // ExecRequest is one command run inside a machine.
 type ExecRequest struct {
 	Command []string

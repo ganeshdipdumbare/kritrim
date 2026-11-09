@@ -55,6 +55,13 @@ type ModelConfig struct {
 	Headers map[string]string
 	Client  *http.Client
 	Timeout time.Duration
+	// Region selects the AWS region for Bedrock.
+	Region string
+	// AWS credentials for Bedrock; empty falls back to the standard
+	// environment variables.
+	AccessKey    string
+	SecretKey    string
+	SessionToken string
 	// JSONMode selects how structured output reaches the model:
 	// "json_schema" (default, native) or "json_object" (schema in the
 	// prompt, for providers without native schema support).

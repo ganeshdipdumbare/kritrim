@@ -1,12 +1,16 @@
 package kritrim
 
 import (
+	"bufio"
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 )
 
@@ -29,6 +33,59 @@ func (m *localMachine) Exec(ctx context.Context, r ExecRequest) (ExecResult, err
 	res, err := localExec(ctx, execRequest{Command: r.Command, Dir: r.Dir, Env: r.Env,
 		Stdin: r.Stdin, Timeout: r.Timeout}, false)
 	return ExecResult{Stdout: res.Stdout, Stderr: res.Stderr, Exit: res.Exit}, err
+}
+
+func (m *localMachine) ExecStream(ctx context.Context, r ExecRequest, emit func(stdout, stderr string)) (ExecResult, error) {
+	if len(r.Command) == 0 {
+		return ExecResult{}, fmt.Errorf("kritrim: empty command")
+	}
+	cmd := exec.CommandContext(ctx, r.Command[0], r.Command[1:]...)
+	cmd.Dir, cmd.Env = r.Dir, append(os.Environ(), r.Env...)
+	if r.Stdin != nil {
+		cmd.Stdin = bytes.NewReader(r.Stdin)
+	}
+	out, err := cmd.StdoutPipe()
+	if err != nil {
+		return ExecResult{}, err
+	}
+	errb, err := cmd.StderrPipe()
+	if err != nil {
+		return ExecResult{}, err
+	}
+	if err := cmd.Start(); err != nil {
+		return ExecResult{}, err
+	}
+	var wg sync.WaitGroup
+	var o, e strings.Builder
+	scan := func(rd io.Reader, dst *strings.Builder, isErr bool) {
+		defer wg.Done()
+		sc := bufio.NewScanner(rd)
+		for sc.Scan() {
+			line := sc.Text() + "\n"
+			dst.WriteString(line)
+			if emit != nil {
+				if isErr {
+					emit("", line)
+				} else {
+					emit(line, "")
+				}
+			}
+		}
+	}
+	wg.Add(2)
+	go scan(out, &o, false)
+	go scan(errb, &e, true)
+	wg.Wait()
+	code := 0
+	if werr := cmd.Wait(); werr != nil {
+		var ee *exec.ExitError
+		if errors.As(werr, &ee) {
+			code = ee.ExitCode()
+		} else {
+			return ExecResult{}, werr
+		}
+	}
+	return ExecResult{Stdout: o.String(), Stderr: e.String(), Exit: code}, nil
 }
 
 func (m *localMachine) Start(ctx context.Context, r StartRequest) (Process, error) {

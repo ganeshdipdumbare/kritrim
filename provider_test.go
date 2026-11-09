@@ -75,6 +75,26 @@ data: [DONE]
 	}
 }
 
+func TestAnthropicPromptCache(t *testing.T) {
+	m := &anthropicModel{name: "c", cfg: ModelConfig{}}
+	req := m.request(Request{
+		System: "be brief",
+		Tools:  []Tool{{Name: "t", Description: "d", Schema: objectSchema(map[string]any{})}},
+		Cache:  true,
+	}, false)
+	sys, ok := req.System.([]any)
+	if !ok || len(sys) != 1 {
+		t.Fatalf("system %#v", req.System)
+	}
+	block, _ := sys[0].(map[string]any)
+	if block["cache_control"] == nil {
+		t.Fatalf("no cache_control: %#v", block)
+	}
+	if req.Tools[0].CacheControl == nil {
+		t.Fatal("tool cache_control missing")
+	}
+}
+
 func TestAnthropicStream(t *testing.T) {
 	var body map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -2,6 +2,7 @@ package kritrim
 
 import (
 	"archive/tar"
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
@@ -18,6 +19,9 @@ import (
 // DockerConfig describes a Docker sandbox.
 type DockerConfig struct {
 	Image string
+	// Container attaches to an existing running container instead of
+	// creating one. Close does not remove it.
+	Container string
 	// Network enables container networking. Default false.
 	Network bool
 }
@@ -31,6 +35,13 @@ type dockerSandbox struct{ cfg DockerConfig }
 func (d *dockerSandbox) Open(ctx context.Context, opts OpenConfig) (Machine, error) {
 	if _, err := exec.LookPath("docker"); err != nil {
 		return nil, errors.New("kritrim: docker CLI not found")
+	}
+	if d.cfg.Container != "" {
+		out, stderr, code, err := dockerRun(ctx, []string{"inspect", "-f", "{{.State.Running}}", d.cfg.Container}, nil)
+		if err != nil || code != 0 || strings.TrimSpace(out) != "true" {
+			return nil, fmt.Errorf("kritrim: container %q is not running: %s %w", d.cfg.Container, stderr, err)
+		}
+		return &dockerMachine{name: d.cfg.Container, external: true}, nil
 	}
 	image := d.cfg.Image
 	if opts.Image != "" {
@@ -54,7 +65,10 @@ func (d *dockerSandbox) Open(ctx context.Context, opts OpenConfig) (Machine, err
 	return &dockerMachine{name: name}, nil
 }
 
-type dockerMachine struct{ name string }
+type dockerMachine struct {
+	name     string
+	external bool
+}
 
 func (m *dockerMachine) Exec(ctx context.Context, r ExecRequest) (ExecResult, error) {
 	if len(r.Command) == 0 {
@@ -71,6 +85,67 @@ func (m *dockerMachine) Exec(ctx context.Context, r ExecRequest) (ExecResult, er
 	args = append(args, r.Command...)
 	out, errb, code, err := dockerRun(ctx, args, r.Stdin)
 	return ExecResult{Stdout: out, Stderr: errb, Exit: code}, err
+}
+
+func (m *dockerMachine) ExecStream(ctx context.Context, r ExecRequest, emit func(stdout, stderr string)) (ExecResult, error) {
+	if len(r.Command) == 0 {
+		return ExecResult{}, errors.New("kritrim: empty command")
+	}
+	args := []string{"exec"}
+	if r.Dir != "" {
+		args = append(args, "-w", r.Dir)
+	}
+	for _, e := range r.Env {
+		args = append(args, "-e", e)
+	}
+	args = append(args, m.name)
+	args = append(args, r.Command...)
+	cmd := exec.CommandContext(ctx, "docker", args...)
+	if r.Stdin != nil {
+		cmd.Stdin = bytes.NewReader(r.Stdin)
+	}
+	out, err := cmd.StdoutPipe()
+	if err != nil {
+		return ExecResult{}, err
+	}
+	errb, err := cmd.StderrPipe()
+	if err != nil {
+		return ExecResult{}, err
+	}
+	if err := cmd.Start(); err != nil {
+		return ExecResult{}, err
+	}
+	var wg sync.WaitGroup
+	var o, e strings.Builder
+	scan := func(rd io.Reader, dst *strings.Builder, isErr bool) {
+		defer wg.Done()
+		sc := bufio.NewScanner(rd)
+		for sc.Scan() {
+			line := sc.Text() + "\n"
+			dst.WriteString(line)
+			if emit != nil {
+				if isErr {
+					emit("", line)
+				} else {
+					emit(line, "")
+				}
+			}
+		}
+	}
+	wg.Add(2)
+	go scan(out, &o, false)
+	go scan(errb, &e, true)
+	wg.Wait()
+	code := 0
+	if werr := cmd.Wait(); werr != nil {
+		var ee *exec.ExitError
+		if errors.As(werr, &ee) {
+			code = ee.ExitCode()
+		} else {
+			return ExecResult{}, werr
+		}
+	}
+	return ExecResult{Stdout: o.String(), Stderr: e.String(), Exit: code}, nil
 }
 
 func (m *dockerMachine) Start(ctx context.Context, r StartRequest) (Process, error) {
@@ -132,6 +207,9 @@ func (m *dockerMachine) Write(ctx context.Context, p string, data []byte, mode f
 }
 
 func (m *dockerMachine) Close(ctx context.Context) error {
+	if m.external {
+		return nil
+	}
 	_, _, _, err := dockerRun(ctx, []string{"rm", "-f", m.name}, nil)
 	return err
 }
