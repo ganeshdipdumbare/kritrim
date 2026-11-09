@@ -37,6 +37,10 @@ type ClientConfig struct {
 	ClientID     string
 	ClientSecret string
 	Scopes       []string
+
+	// PushURL registers a webhook for every task this client creates.
+	PushURL   string
+	PushToken string
 }
 
 // Client calls a remote A2A agent.
@@ -181,8 +185,12 @@ func (c *Client) Card(ctx context.Context) (*Card, error) {
 func (c *Client) Run(ctx context.Context, prompt string, opts ...RunOption) (*kritrim.Result, error) {
 	o := resolveRun(opts)
 	msg := c.message(prompt, o)
+	params := map[string]any{"message": msg}
+	if c.cfg.PushURL != "" {
+		params["configuration"] = map[string]any{"pushNotificationConfig": PushConfig{URL: c.cfg.PushURL, Token: c.cfg.PushToken}}
+	}
 	var raw json.RawMessage
-	if err := c.call(ctx, "message/send", map[string]any{"message": msg}, &raw); err != nil {
+	if err := c.call(ctx, "message/send", params, &raw); err != nil {
 		return nil, err
 	}
 	task, err := decodeTask(raw)
@@ -197,9 +205,13 @@ func (c *Client) Run(ctx context.Context, prompt string, opts ...RunOption) (*kr
 func (c *Client) Stream(ctx context.Context, prompt string, opts ...RunOption) iter.Seq2[kritrim.Event, error] {
 	return func(yield func(kritrim.Event, error) bool) {
 		o := resolveRun(opts)
+		params := map[string]any{"message": c.message(prompt, o)}
+		if c.cfg.PushURL != "" {
+			params["configuration"] = map[string]any{"pushNotificationConfig": PushConfig{URL: c.cfg.PushURL, Token: c.cfg.PushToken}}
+		}
 		body, _ := json.Marshal(map[string]any{
 			"jsonrpc": "2.0", "id": 1, "method": "message/stream",
-			"params": map[string]any{"message": c.message(prompt, o)},
+			"params": params,
 		})
 		u := *c.base
 		u.Path = strings.TrimSuffix(u.Path, "/") + "/"

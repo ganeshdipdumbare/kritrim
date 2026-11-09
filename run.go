@@ -210,6 +210,7 @@ func (a *Agent) loop(ctx context.Context, sess *Session, msgs []Message, ps *Pau
 		}
 		emit(Event{Type: "step_start", Step: step})
 		req := Request{
+			Model:       a.Model(),
 			System:      a.cfg.Instructions,
 			Tools:       a.cfg.Tools,
 			MaxTokens:   a.cfg.maxTokens(),
@@ -297,6 +298,7 @@ func (a *Agent) loop(ctx context.Context, sess *Session, msgs []Message, ps *Pau
 		if derr := decodeOutput(o.output, text, wrapped); derr != nil {
 			fix := fmt.Sprintf("Your reply was not valid JSON for the required schema (%v). Reply with only the JSON object.", derr)
 			req := Request{
+				Model:       a.Model(),
 				System:      a.cfg.Instructions,
 				Messages:    append(append([]Message(nil), msgs...), Message{Role: RoleUser, Content: fix}),
 				MaxTokens:   a.cfg.maxTokens(),

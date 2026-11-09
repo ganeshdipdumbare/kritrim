@@ -90,6 +90,7 @@ of the above.
 
 ```go
 kritrim.OpenAI("gpt-4.1")                  // OPENAI_API_KEY
+kritrim.OpenAIResponses("gpt-5")           // Responses API
 kritrim.Anthropic("claude-sonnet-5-5")     // ANTHROPIC_API_KEY
 kritrim.Gemini("gemini-2.5-pro")           // GEMINI_API_KEY
 kritrim.Ollama("llama3")                   // localhost:11434
@@ -246,7 +247,8 @@ kritrim.StateFrom(ctx).Set("seen", true)
 - **PII hooks.** `guard.PII("email", "credit_card")` redacts prompts, replies
   and tool results.
 - **Tracing.** `trace.JSON(w)` writes one line per run/model/tool event;
-  `trace.OTLP(...)` exports one OTLP/HTTP trace per run to a collector.
+  `trace.OTLP(...)` exports OTLP/HTTP traces and `trace.OTel(...)` also
+  exports metrics and logs.
 - **User Go tools are your code.** The broker governs built-in tools; put
   untrusted work in a sandbox.
 
@@ -377,6 +379,8 @@ Agent card, `message/send`, `message/stream`, `tasks/get`, `tasks/cancel`, text
 and data parts, per-context isolation, and interrupt/resume are implemented.
 Tasks live in memory or SQL (`a2a.SQLTasks`). Auth is required; contexts are not an auth boundary. The client supports the
 OAuth client-credentials grant (`TokenURL`, `ClientID`, `ClientSecret`).
+Push notifications: set `ClientConfig.PushURL` (or `Client.SetPush`) and the
+server POSTs task updates to that webhook, with an optional notification token.
 
 ## Evals
 

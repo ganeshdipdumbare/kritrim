@@ -2,10 +2,12 @@ package a2a
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -16,8 +18,9 @@ func testServer(t *testing.T, auth Auth) (*httptest.Server, *atomic.Int32) {
 	t.Helper()
 	var contexts atomic.Int32
 	srv, err := NewServer(ServerConfig{
-		Card: Card{Name: "test", Description: "test agent"},
-		Auth: auth,
+		Card:             Card{Name: "test", Description: "test agent"},
+		Auth:             auth,
+		PushAllowPrivate: true,
 		Agent: func(ctxID string) (*kritrim.Agent, error) {
 			contexts.Add(1)
 			refund := kritrim.Risky(kritrim.NewTool("refund", "refund", func(ctx context.Context, in struct {
@@ -170,6 +173,65 @@ func TestOAuthClientCredentials(t *testing.T) {
 	}
 	if form.Get("grant_type") != "client_credentials" || form.Get("client_id") != "id" || form.Get("scope") != "mcp:tools" {
 		t.Fatalf("form %+v", form)
+	}
+}
+
+func TestPushNotifications(t *testing.T) {
+	var mu sync.Mutex
+	var tasks []Task
+	var token string
+	recv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		token = r.Header.Get("X-A2A-Notification-Token")
+		var task Task
+		if err := json.NewDecoder(r.Body).Decode(&task); err == nil {
+			tasks = append(tasks, task)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer recv.Close()
+	ts, _ := testServer(t, AllowAll())
+	c, err := NewClient(ClientConfig{Endpoint: ts.URL, PushURL: recv.URL, PushToken: "tok"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Run(context.Background(), "x"); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if token != "tok" {
+		t.Fatalf("token %q", token)
+	}
+	if len(tasks) < 2 {
+		t.Fatalf("notifications %d", len(tasks))
+	}
+	states := map[string]bool{}
+	for _, task := range tasks {
+		states[task.Status.State] = true
+	}
+	if !states[StateWorking] || !states[StateInputRequired] {
+		t.Fatalf("states %v", states)
+	}
+}
+
+func TestPushConfigRPC(t *testing.T) {
+	ts, _ := testServer(t, AllowAll())
+	c, _ := NewClient(ClientConfig{Endpoint: ts.URL})
+	ctx := context.Background()
+	if err := c.SetPush(ctx, "t1", PushConfig{URL: "https://example.com/hook", Token: "tok"}); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := c.GetPush(ctx, "t1")
+	if err != nil || cfg.URL != "https://example.com/hook" {
+		t.Fatalf("%+v %v", cfg, err)
+	}
+	if err := c.DeletePush(ctx, "t1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.GetPush(ctx, "t1"); err == nil {
+		t.Fatal("deleted config still present")
 	}
 }
 

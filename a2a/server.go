@@ -88,14 +88,22 @@ type ServerConfig struct {
 	MaxContexts  int
 	MaxBodyBytes int64
 	MaxDuration  time.Duration
+
+	// Push stores task webhooks. Default MemoryPush.
+	Push PushStore
+	// PushAllowPrivate permits push URLs on private addresses. Tests and
+	// internal deployments only; it is an SSRF surface.
+	PushAllowPrivate bool
+	PushClient       *http.Client
 }
 
 // Server is an http.Handler speaking A2A.
 type Server struct {
-	cfg      ServerConfig
-	mu       sync.Mutex
-	contexts map[string]*contextEntry
-	cancels  map[string]context.CancelFunc
+	cfg        ServerConfig
+	mu         sync.Mutex
+	contexts   map[string]*contextEntry
+	cancels    map[string]context.CancelFunc
+	pushClient *http.Client
 }
 
 type contextEntry struct {
@@ -132,8 +140,16 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 	if cfg.Card.PreferredTransport == "" {
 		cfg.Card.PreferredTransport = "JSONRPC"
 	}
+	if cfg.Push == nil {
+		cfg.Push = MemoryPush()
+	}
+	if cfg.PushClient == nil {
+		cfg.PushClient = &http.Client{Timeout: 5 * time.Second}
+	}
 	cfg.Card.Capabilities.Streaming = true
-	return &Server{cfg: cfg, contexts: map[string]*contextEntry{}, cancels: map[string]context.CancelFunc{}}, nil
+	cfg.Card.Capabilities.PushNotifications = true
+	return &Server{cfg: cfg, contexts: map[string]*contextEntry{}, cancels: map[string]context.CancelFunc{},
+		pushClient: cfg.PushClient}, nil
 }
 
 // Close closes every cached agent.
@@ -184,13 +200,24 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.taskGet(w, r, req.ID, req.Params)
 	case "tasks/cancel":
 		s.taskCancel(w, r, req.ID, req.Params)
+	case "tasks/pushNotificationConfig/set":
+		s.pushSet(w, r, req.ID, req.Params)
+	case "tasks/pushNotificationConfig/get":
+		s.pushGet(w, r, req.ID, req.Params)
+	case "tasks/pushNotificationConfig/list":
+		s.pushList(w, r, req.ID, req.Params)
+	case "tasks/pushNotificationConfig/delete":
+		s.pushDelete(w, r, req.ID, req.Params)
 	default:
 		s.fail(w, req.ID, -32601, "method not found")
 	}
 }
 
 type sendParams struct {
-	Message Message `json:"message"`
+	Message       Message `json:"message"`
+	Configuration *struct {
+		PushNotificationConfig *PushConfig `json:"pushNotificationConfig,omitempty"`
+	} `json:"configuration,omitempty"`
 }
 
 func (s *Server) send(w http.ResponseWriter, r *http.Request, id json.RawMessage, raw json.RawMessage, stream bool) {
@@ -234,9 +261,13 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request, id json.RawMessage
 	if task == nil {
 		task = &Task{ID: taskID, ContextID: ctxID, Status: TaskStatus{State: StateSubmitted, Timestamp: now()}}
 	}
+	if p.Configuration != nil && p.Configuration.PushNotificationConfig != nil {
+		_ = s.cfg.Push.Set(ctx, taskID, *p.Configuration.PushNotificationConfig)
+	}
 	task.History = append(task.History, p.Message)
 	task.Status = TaskStatus{State: StateWorking, Timestamp: now()}
 	_ = s.cfg.Tasks.Put(ctx, task)
+	s.notify(ctx, task)
 
 	opts := []kritrim.Option{kritrim.Thread(ctxID)}
 	if len(decisions) > 0 {
@@ -256,6 +287,7 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request, id json.RawMessage
 	}
 	applyResult(task, res)
 	_ = s.cfg.Tasks.Put(context.Background(), task)
+	s.notify(context.Background(), task)
 	s.result(w, id, task)
 }
 
@@ -294,6 +326,7 @@ func (s *Server) streamRun(ctx context.Context, w http.ResponseWriter, id json.R
 	}
 	applyResult(task, res)
 	_ = s.cfg.Tasks.Put(context.Background(), task)
+	s.notify(context.Background(), task)
 	final := map[string]any{"kind": "status-update", "taskId": task.ID, "contextId": task.ContextID,
 		"status": map[string]any{"state": task.Status.State}, "final": true}
 	if task.Status.Message != nil {
@@ -360,6 +393,7 @@ func (s *Server) taskCancel(w http.ResponseWriter, r *http.Request, id json.RawM
 	}
 	t.Status = TaskStatus{State: StateCanceled, Timestamp: now()}
 	_ = s.cfg.Tasks.Put(r.Context(), t)
+	s.notify(r.Context(), t)
 	s.result(w, id, t)
 }
 

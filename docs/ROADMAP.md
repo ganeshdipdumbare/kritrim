@@ -106,9 +106,8 @@ Shipped:
 - Sealed durable approval test across a box restart.
 
 **Still open:** E2B/microsandbox/Firecracker/Tensorlake sandbox adapters, A2A
-push notifications and file parts, OpenAI Responses, Cedar-style
-authorization, python vended tools, voice/bidi, evals CLI run/generate and
-remote traces.
+file parts, Cedar-style authorization, python vended tools, voice/bidi, evals
+CLI run/generate and remote traces.
 
 ## v0.7 — parity pass (shipped)
 
@@ -126,7 +125,12 @@ remote traces.
 - Sandboxes: Docker attach to an existing container; `StreamingMachine`
   (Docker/Local/SSH) streams exec output.
 - Evals: `SimulatedTools` fixture tools.
-- A2A OAuth client credentials; `Notebook` and `AskUser` tools.
+- A2A OAuth client credentials and push notifications (webhooks, tokens,
+  SSRF guard); `Notebook` and `AskUser` tools.
+- OpenAI Responses API (`OpenAIResponses`): input/output items, function calls,
+  streaming, JSON schema output.
+- OTel metrics and logs (`trace.OTel`): model/tool calls, tokens, durations,
+  run counts, lifecycle logs; `trace.OTLP` remains traces only.
 - Memory injection (`memory.Inject`) and steering (`plugin.Steer`).
 
 **Gate:** parallel timing test; direct call; fork conflict; cancel; idempotency
