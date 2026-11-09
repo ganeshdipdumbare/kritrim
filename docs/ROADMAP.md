@@ -105,9 +105,31 @@ Shipped:
 - Evals case generation and multi-turn simulation.
 - Sealed durable approval test across a box restart.
 
-**Still open:** Bedrock and OpenAI Responses providers, prompt caching,
-Cedar-style authorization, steering, notebook/handoff/python vended tools,
-voice/bidi.
+**Still open:** E2B/microsandbox/Firecracker/Tensorlake sandbox adapters, A2A
+push notifications and file parts, OpenAI Responses, Cedar-style
+authorization, steering, notebook and python vended tools, voice/bidi, evals
+CLI run/generate and remote traces.
+
+## v0.7 — parity pass (shipped)
+
+- Tool executors: `Config.ToolConcurrency` runs parallel tool calls; risky
+  tools stay sequential. `Agent.CallTool` runs a tool directly.
+- Lifecycle: `RunID` + `Agent.Cancel`, `Idempotency`, `Agent.Fork` session
+  snapshots, `Agent.Session` reads.
+- Dynamic tools: `NewRawTool` for MCP-style schemas and simulators.
+- Skills: `skills.Load`, `skills.Prompt`, `skills.Tools` (`use_skill`).
+- Plugins: `plugin.Inject` (system-prompt context) and `plugin.Offload`
+  (large tool results to files) plus `read_offloaded`.
+- Guard: `guard.Deny` prompt policy on top of `guard.PII`.
+- Models: Amazon Bedrock Converse with SigV4; prompt caching for Anthropic
+  (`Config.PromptCache`).
+- Sandboxes: Docker attach to an existing container; `StreamingMachine`
+  (Docker/Local/SSH) streams exec output.
+- Evals: `SimulatedTools` fixture tools.
+
+**Gate:** parallel timing test; direct call; fork conflict; cancel; idempotency
+single model call; skills/offload/inject/deny tests; Bedrock request/signature
+tests; prompt-cache body test; Docker attach and streamed-exec tests.
 
 ## v1.0 — freeze
 

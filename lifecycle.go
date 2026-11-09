@@ -95,10 +95,10 @@ func (a *Agent) idemBegin(key string) (*idemEntry, bool) {
 }
 
 func (a *Agent) idemFinish(key string, e *idemEntry, res *Result, err error) {
+	a.idemMu.Lock()
 	e.res, e.err = res, err
 	e.expires = now().Add(10 * time.Minute)
 	close(e.done)
-	a.idemMu.Lock()
 	for k, v := range a.idem {
 		if time.Now().After(v.expires) {
 			delete(a.idem, k)

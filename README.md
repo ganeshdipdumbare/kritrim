@@ -35,9 +35,14 @@ kritrim.New(Config) (*Agent, error)
 (*Agent).Stream(ctx, prompt, ...Option) iter.Seq2[Event, error]
 (*Agent).AsTool(name, description) Tool
 (*Agent).WithTools(...Tool) *Agent
+(*Agent).CallTool(ctx, name, args, ...Option) (string, error)
+(*Agent).Fork(ctx, from, to) error
+(*Agent).Session(ctx, id) (*Session, error)
+(*Agent).Cancel(runID) bool
 (*Agent).Close() error
 
 kritrim.NewTool(name, description, fn) Tool
+kritrim.NewRawTool(name, description, schema, fn) Tool
 kritrim.Risky(Tool) Tool
 kritrim.SchemaOf(v) map[string]any
 
@@ -45,6 +50,8 @@ kritrim.Thread(id) Option
 kritrim.Output(&v) Option
 kritrim.Decisions(map[string]Decision) Option
 kritrim.OnEvent(func(Event)) Option
+kritrim.RunID(id) Option
+kritrim.Idempotency(key) Option
 kritrim.User(id) Option
 kritrim.Roles(...) Option
 kritrim.Images(...) Option
@@ -89,6 +96,7 @@ kritrim.Groq("llama-3.3-70b-versatile")
 kritrim.Mistral("mistral-large-latest")
 kritrim.OpenRouter("anthropic/claude-sonnet-5-5")
 kritrim.LiteLLM("http://gateway:4000", "gpt-4.1")
+kritrim.Bedrock("anthropic.claude-sonnet-5-5") // AWS SigV4, Converse API
 kritrim.Compatible("provider", "https://host/v1", "model")
 kritrim.Mock(turns...)                     // offline
 ```
@@ -114,9 +122,10 @@ a, _ := kritrim.New(kritrim.Config{
 })
 ```
 
-The JSON Schema comes from the Go type (`json`, `desc`, `enum`). Mark a tool
-`Risky` to require approval. Built-in tools include time, HTTP, web search,
-shell, files, line-numbered read, write, edit, sleep and stop.
+The JSON Schema comes from the Go type (`json`, `desc`, `enum`). Mark a tool `Risky` to require approval. `ToolConcurrency > 1` runs the
+model's parallel tool calls concurrently (risky tools stay sequential).
+`Agent.CallTool` runs one directly. Built-in tools include time, HTTP, web
+search, shell, files, line-numbered read, write, edit, sleep and stop.
 
 ## Streaming
 
@@ -148,7 +157,10 @@ a.Run(ctx, "What is my name?", kritrim.Thread("user-42"))
 ```
 
 Sessions are version-checked: two writers racing get `ErrSessionConflict` and
-the second can retry. `SQLSessions` uses `database/sql`; import your driver.
+the second can retry. `Agent.Fork` snapshots a conversation (including paused
+state) into a new id. `SQLSessions` uses `database/sql`; import your driver.
+`RunID` + `Agent.Cancel` stop a run; `Idempotency` deduplicates concurrent
+runs with the same key.
 
 ## Durable approvals
 
@@ -248,7 +260,9 @@ a, _ := kritrim.New(kritrim.Config{
 ```
 
 `Local` exists for development. `sandbox/ssh` runs commands and files on a
-remote host with host-key checking and an SSH option allowlist. Every adapter
+remote host with host-key checking and an SSH option allowlist.
+`DockerConfig{Container: "name"}` attaches to an existing container instead
+of creating one, and `StreamingMachine` streams exec output. Every adapter
 must pass `sandbox/sandboxtest.Run`.
 
 ### The agent in a sandbox (sealed)
@@ -392,6 +406,22 @@ go run ./cmd/kritrim-evals report report.json
 go run ./cmd/kritrim-evals diagnose report.json
 ```
 
+## Skills and plugins
+
+```go
+sk, _ := skills.Load("./skills")
+a, _ := kritrim.New(kritrim.Config{
+    Model: "…",
+    Tools: append(skills.Tools(sk), kritrim.Time()),
+    // skills.Prompt(sk) goes into Instructions
+    Hooks: plugin.Inject(func(ctx context.Context) string { return "time: " + time.Now().Format(time.RFC3339) }),
+})
+```
+
+`plugin.Offload(dir, bytes)` moves large tool results to files and returns a
+`read_offloaded` tool. `guard.Deny(pattern, reason)` blocks matching prompts;
+`guard.PII(...)` redacts personal data.
+
 ## Triggers
 
 ```go
@@ -438,12 +468,13 @@ go vet ./...
 
 ## Status
 
-Released: core loop, providers, tools, sessions (memory/file/SQL), durable
-approvals, hooks, retry, context, state, audit, PII, tracing, Docker/SSH/Local
-sandboxes, sealed mode, MCP, A2A, evals, graph/swarm, triggers, memory.
+Released: core loop, providers (OpenAI-compatible, Anthropic, Gemini, Bedrock),
+tools (parallel and direct), sessions (memory/file/SQL), durable approvals,
+hooks, retry, context, state, fork/cancel/idempotency, audit, PII, tracing
+(JSON + OTLP), Docker/SSH/Local sandboxes (attach + streamed exec), sealed
+mode, MCP, A2A, evals, graph/swarm, triggers, memory, skills, plugins.
 
 Not shipped yet: E2B/microsandbox/Firecracker/Tensorlake sandbox adapters (the
 conformance kit and interface are ready), A2A push notifications and file
-parts, evals simulators/red-team and case generation, OTel exporters (the
-trace hooks are the seam), Bedrock and OpenAI Responses providers, prompt
-caching, voice. See [`docs/ROADMAP.md`](docs/ROADMAP.md).
+parts, OpenAI Responses, Cedar-style authorization, steering, notebook and
+python tools, voice. See [`docs/ROADMAP.md`](docs/ROADMAP.md).
