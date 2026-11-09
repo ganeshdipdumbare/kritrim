@@ -1,11 +1,9 @@
 (function () {
   var NAV = [
-    { pages: ["introduction"] },
-    { title: "Getting Started", pages: ["installation", "quickstart", "concepts"] },
-    { title: "Build", pages: ["providers", "tools", "streaming", "sessions", "approvals", "structured-output"] },
-    { title: "Secure", pages: ["security", "sandboxes", "sealed"] },
-    { title: "Integrate", pages: ["mcp", "a2a", "multiagent", "triggers"] },
-    { title: "Quality", pages: ["evals", "memory-skills", "observability"] },
+    { title: "Get started", pages: ["introduction", "installation", "quickstart", "concepts"] },
+    { title: "Build guides", pages: ["tools", "sessions", "approvals", "structured-output", "streaming"] },
+    { title: "Run guides", pages: ["security", "sandboxes", "sealed", "observability"] },
+    { title: "Components", pages: ["providers", "mcp", "a2a", "multiagent", "evals", "triggers", "memory-skills"] },
     { title: "Reference", pages: ["reference-api", "status"] }
   ];
   var ICON = {
@@ -44,7 +42,7 @@
         });
         return;
       }
-      var open = openGroups[g.title] !== undefined ? !!openGroups[g.title] : g.title === "Getting Started";
+      var open = openGroups[g.title] !== undefined ? !!openGroups[g.title] : (g.title === "Get started" || g.title === "Build guides");
       var html = '<div class="group" data-open="' + open + '"><button type="button" aria-expanded="' + open + '">' + g.title + ICON.chev + '</button><div class="items">';
       g.pages.forEach(function (id) {
         if (pages[id]) html += '<a class="item" href="#' + id + '">' + title(id) + "</a>";
@@ -188,9 +186,7 @@
         });
         if (!hs.length) toc.innerHTML = '<a href="#' + id + '" class="on">' + title(id) + "</a>";
       }
-      var top = id === "security" || id === "sandboxes" || id === "sealed" ? "secure"
-        : id === "a2a" || id === "mcp" || id === "multiagent" ? "interop"
-        : id === "reference-api" || id === "status" ? "reference" : "docs";
+      var top = id === "reference-api" || id === "status" ? "api" : "docs";
       document.querySelectorAll(".toplinks a").forEach(function (a) {
         if (a.dataset.top === top) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current");
       });

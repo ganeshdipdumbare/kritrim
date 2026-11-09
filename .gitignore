@@ -6,3 +6,4 @@ kritrim
 # Vercel local link
 docs/public/.vercel/
 docs/public/.env*
+.vercel
