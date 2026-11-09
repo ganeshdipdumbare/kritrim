@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://kritrim-docs.vercel.app/sitemap.xml

@@ -1,0 +1,64 @@
+/* kritrim brand: warm paper, ink type, one vermilion signal. */
+:root {
+  --accent: #e8452c;
+  --accent-soft: #fbe9e3;
+  --accent-ink: #a62a15;
+  --info: #1f4bff;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --accent: #ff7a5c;
+    --accent-soft: #3a1c15;
+    --accent-ink: #ffb3a0;
+  }
+}
+
+:root[data-theme="dark"] {
+  --accent: #ff7a5c;
+  --accent-soft: #3a1c15;
+  --accent-ink: #ffb3a0;
+}
+
+/* The mark reads as a K cut out of the tile, with one live node. */
+.mark svg,
+.brandline svg,
+.side .version .logo svg {
+  color: var(--fg);
+}
+
+.hero-art .dg .box.em {
+  fill: color-mix(in srgb, var(--accent) 10%, var(--bg-2));
+  stroke: var(--accent);
+}
+
+.hero-art .dg .box.em + text,
+.hero-art .dg .em-text {
+  fill: var(--accent-ink);
+}
+
+.hero-eyebrow .dot {
+  background: var(--accent);
+}
+
+.hero-title em {
+  color: var(--accent-ink);
+}
+
+/* Keep long API tables readable on the reference page. */
+.page .table code {
+  white-space: nowrap;
+}
+
+@media (max-width: 640px) {
+  .page .table code {
+    white-space: normal;
+  }
+}
+
+@media (max-width: 640px) {
+  html, body { overflow-x: hidden; }
+  .hero-install { display: flex; width: 100%; }
+  .hero-install code { flex: 1; min-width: 0; display: block; white-space: nowrap !important; overflow-x: auto; font-size: 11px; }
+  .hero-meta { gap: 10px 14px; }
+}
