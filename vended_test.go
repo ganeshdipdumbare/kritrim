@@ -54,6 +54,46 @@ func TestStopToolEndsRun(t *testing.T) {
 	}
 }
 
+func TestNotebookPersistsAcrossRuns(t *testing.T) {
+	m := &spyModel{turns: []Turn{
+		TurnTool("notebook", map[string]any{"op": "create", "name": "n", "content": "a"}),
+		{Text: "ok"},
+		TurnTool("notebook", map[string]any{"op": "append", "name": "n", "content": "b"}),
+		{Text: "ok"},
+		TurnTool("notebook", map[string]any{"op": "read", "name": "n"}),
+		{Text: "done"},
+	}}
+	a := newAgent(t, Config{Model: m, Tools: []Tool{Notebook()}})
+	ctx := context.Background()
+	for i := 0; i < 3; i++ {
+		if _, err := a.Run(ctx, "x", Thread("t")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sess, err := a.Session(ctx, "t")
+	if err != nil || sess.Values["notebook:n"] != "a\nb" {
+		t.Fatalf("%+v %v", sess, err)
+	}
+}
+
+func TestAskUserTool(t *testing.T) {
+	m := &spyModel{turns: []Turn{TurnTool("ask_user", map[string]any{"question": "ok?"}), {Text: "done"}}}
+	a := newAgent(t, Config{Model: m, Tools: []Tool{AskUser()},
+		Approve: func(ctx context.Context, req Approval) (Decision, error) {
+			if req.Args["question"] != "ok?" {
+				t.Fatalf("question %+v", req.Args)
+			}
+			return Respond("yes"), nil
+		}})
+	res, err := a.Run(context.Background(), "ask")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := res.Steps[0].ToolResults[0].Content; got != "yes" {
+		t.Fatalf("%q", got)
+	}
+}
+
 func TestSleepTool(t *testing.T) {
 	start := now()
 	if _, err := Sleep(2*time.Second).run(testEnv(t), map[string]any{"seconds": 0}); err != nil {

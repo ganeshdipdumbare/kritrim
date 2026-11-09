@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ganeshdipdumbare/kritrim"
@@ -29,6 +30,13 @@ type ClientConfig struct {
 	AllowHosts []string
 	Client     *http.Client
 	Timeout    time.Duration
+
+	// OAuth client-credentials grant. When TokenURL is set, the client
+	// fetches and refreshes a bearer token for every request.
+	TokenURL     string
+	ClientID     string
+	ClientSecret string
+	Scopes       []string
 }
 
 // Client calls a remote A2A agent.
@@ -38,6 +46,10 @@ type Client struct {
 	http   *http.Client
 	card   *Card
 	cardAt time.Time
+
+	tokenMu  sync.Mutex
+	token    string
+	tokenExp time.Time
 }
 
 // NewClient validates the endpoint and returns a client.
@@ -75,13 +87,63 @@ func allowed(host string, rules []string) bool {
 	return false
 }
 
-func (c *Client) headers(req *http.Request) {
+func (c *Client) headers(ctx context.Context, req *http.Request) error {
 	for k, v := range c.cfg.Headers {
 		if strings.HasPrefix(v, "secret://") {
 			v = os.Getenv(strings.TrimPrefix(v, "secret://"))
 		}
 		req.Header.Set(k, v)
 	}
+	if c.cfg.TokenURL == "" || req.Header.Get("Authorization") != "" {
+		return nil
+	}
+	tok, err := c.bearer(ctx)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+tok)
+	return nil
+}
+
+func (c *Client) bearer(ctx context.Context) (string, error) {
+	c.tokenMu.Lock()
+	defer c.tokenMu.Unlock()
+	if c.token != "" && time.Now().Before(c.tokenExp) {
+		return c.token, nil
+	}
+	form := url.Values{}
+	form.Set("grant_type", "client_credentials")
+	form.Set("client_id", c.cfg.ClientID)
+	form.Set("client_secret", c.cfg.ClientSecret)
+	if len(c.cfg.Scopes) > 0 {
+		form.Set("scope", strings.Join(c.cfg.Scopes, " "))
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.cfg.TokenURL, strings.NewReader(form.Encode()))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode/100 != 2 {
+		return "", fmt.Errorf("a2a: token: %s", resp.Status)
+	}
+	var tr struct {
+		AccessToken string `json:"access_token"`
+		ExpiresIn   int    `json:"expires_in"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&tr); err != nil {
+		return "", err
+	}
+	if tr.AccessToken == "" {
+		return "", errors.New("a2a: token response has no access_token")
+	}
+	c.token = tr.AccessToken
+	c.tokenExp = time.Now().Add(time.Duration(tr.ExpiresIn)*time.Second - 30*time.Second)
+	return c.token, nil
 }
 
 // Card fetches and caches the remote agent card.
@@ -95,7 +157,9 @@ func (c *Client) Card(ctx context.Context) (*Card, error) {
 	if err != nil {
 		return nil, err
 	}
-	c.headers(req)
+	if err := c.headers(ctx, req); err != nil {
+		return nil, err
+	}
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return nil, err
@@ -146,7 +210,10 @@ func (c *Client) Stream(ctx context.Context, prompt string, opts ...RunOption) i
 		}
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Accept", "text/event-stream")
-		c.headers(req)
+		if err := c.headers(ctx, req); err != nil {
+			yield(kritrim.Event{Type: "error", Err: err}, err)
+			return
+		}
 		resp, err := c.http.Do(req)
 		if err != nil {
 			yield(kritrim.Event{Type: "error", Err: err}, err)
@@ -274,7 +341,9 @@ func (c *Client) call(ctx context.Context, method string, params any, out any) e
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	c.headers(req)
+	if err := c.headers(ctx, req); err != nil {
+		return err
+	}
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return err

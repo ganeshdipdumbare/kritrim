@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -146,6 +147,29 @@ func TestContextIsolation(t *testing.T) {
 	}
 	if contexts.Load() != 2 {
 		t.Fatalf("contexts %d", contexts.Load())
+	}
+}
+
+func TestOAuthClientCredentials(t *testing.T) {
+	var form url.Values
+	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		form = r.PostForm
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"access_token":"tok","expires_in":3600}`))
+	}))
+	defer tokenSrv.Close()
+	ts, _ := testServer(t, Bearer("tok"))
+	c, err := NewClient(ClientConfig{Endpoint: ts.URL, TokenURL: tokenSrv.URL,
+		ClientID: "id", ClientSecret: "secret", Scopes: []string{"mcp:tools"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Run(context.Background(), "x"); err != nil {
+		t.Fatal(err)
+	}
+	if form.Get("grant_type") != "client_credentials" || form.Get("client_id") != "id" || form.Get("scope") != "mcp:tools" {
+		t.Fatalf("form %+v", form)
 	}
 }
 

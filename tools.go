@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 )
@@ -521,6 +522,74 @@ func Stop() Tool {
 			return reason, nil
 		},
 	}
+}
+
+// Notebook returns a tool for persistent notes kept in session state.
+func Notebook() Tool {
+	return Tool{
+		Name:        "notebook",
+		Description: "Create, append, read or list persistent notes.",
+		Schema: objectSchema(map[string]any{
+			"op":      map[string]any{"type": "string", "enum": []any{"create", "append", "read", "list"}},
+			"name":    map[string]any{"type": "string", "description": "note name"},
+			"content": map[string]any{"type": "string", "description": "content to write"},
+		}, "op"),
+		run: func(ctx context.Context, args map[string]any) (string, error) {
+			st := StateFrom(ctx)
+			if st == nil {
+				return "", fmt.Errorf("notebook needs a run state")
+			}
+			op, _ := args["op"].(string)
+			name, _ := args["name"].(string)
+			content, _ := args["content"].(string)
+			key := "notebook:" + name
+			switch op {
+			case "list":
+				var names []string
+				for k := range st.Snapshot() {
+					if strings.HasPrefix(k, "notebook:") {
+						names = append(names, strings.TrimPrefix(k, "notebook:"))
+					}
+				}
+				sort.Strings(names)
+				return strings.Join(names, "\n"), nil
+			case "read":
+				v, _ := st.Get(key).(string)
+				if v == "" {
+					return "", fmt.Errorf("no note %q", name)
+				}
+				return v, nil
+			case "create", "append":
+				if name == "" {
+					return "", fmt.Errorf("name is required")
+				}
+				if op == "append" {
+					if prev, _ := st.Get(key).(string); prev != "" {
+						content = prev + "\n" + content
+					}
+				}
+				st.Set(key, content)
+				return "saved " + name, nil
+			default:
+				return "", fmt.Errorf("op must be create, append, read or list")
+			}
+		},
+	}
+}
+
+// AskUser returns a risky tool that asks the user a question. Configure
+// Config.Approve to return Respond(answer); the tool itself never answers.
+func AskUser() Tool {
+	return Risky(Tool{
+		Name:        "ask_user",
+		Description: "Ask the user a question and wait for their answer.",
+		Schema: objectSchema(map[string]any{
+			"question": map[string]any{"type": "string", "description": "the question"},
+		}, "question"),
+		run: func(ctx context.Context, args map[string]any) (string, error) {
+			return "the user did not answer", nil
+		},
+	})
 }
 
 func intArg(args map[string]any, key string, def int) int {

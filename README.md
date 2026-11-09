@@ -74,6 +74,8 @@ kritrim.Write(WriteConfig) Tool
 kritrim.EditFile(EditConfig) Tool
 kritrim.Sleep(max) Tool
 kritrim.Stop() Tool
+kritrim.Notebook() Tool
+kritrim.AskUser() Tool
 
 kritrim.Local() Sandbox
 kritrim.Docker(DockerConfig) Sandbox
@@ -125,7 +127,8 @@ a, _ := kritrim.New(kritrim.Config{
 The JSON Schema comes from the Go type (`json`, `desc`, `enum`). Mark a tool `Risky` to require approval. `ToolConcurrency > 1` runs the
 model's parallel tool calls concurrently (risky tools stay sequential).
 `Agent.CallTool` runs one directly. Built-in tools include time, HTTP, web
-search, shell, files, line-numbered read, write, edit, sleep and stop.
+search, shell, files, line-numbered read, write, edit, sleep, stop, notebook
+and ask_user.
 
 ## Streaming
 
@@ -372,8 +375,8 @@ tool := c.AsTool("triage", "Routes a ticket")
 
 Agent card, `message/send`, `message/stream`, `tasks/get`, `tasks/cancel`, text
 and data parts, per-context isolation, and interrupt/resume are implemented.
-Tasks live in memory or SQL (`a2a.SQLTasks`). Auth is required; contexts are
-not an auth boundary.
+Tasks live in memory or SQL (`a2a.SQLTasks`). Auth is required; contexts are not an auth boundary. The client supports the
+OAuth client-credentials grant (`TokenURL`, `ClientID`, `ClientSecret`).
 
 ## Evals
 
@@ -472,9 +475,9 @@ Released: core loop, providers (OpenAI-compatible, Anthropic, Gemini, Bedrock),
 tools (parallel and direct), sessions (memory/file/SQL), durable approvals,
 hooks, retry, context, state, fork/cancel/idempotency, audit, PII, tracing
 (JSON + OTLP), Docker/SSH/Local sandboxes (attach + streamed exec), sealed
-mode, MCP, A2A, evals, graph/swarm, triggers, memory, skills, plugins.
+mode, MCP, A2A, evals, graph/swarm, triggers, memory, skills, plugins, notebook.
 
 Not shipped yet: E2B/microsandbox/Firecracker/Tensorlake sandbox adapters (the
 conformance kit and interface are ready), A2A push notifications and file
-parts, OpenAI Responses, Cedar-style authorization, steering, notebook and
-python tools, voice. See [`docs/ROADMAP.md`](docs/ROADMAP.md).
+parts, OpenAI Responses, Cedar-style authorization, steering, python tools,
+voice. See [`docs/ROADMAP.md`](docs/ROADMAP.md).
