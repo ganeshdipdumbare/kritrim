@@ -386,13 +386,15 @@ func (b *boxHost) run(ctx context.Context, prompt string, emit func(Event), o ru
 	var msgs []Message
 	var pending []Interrupt
 	var paused *PausedStep
+	sess := &Session{ID: o.thread}
 	if o.thread != "" {
-		sess, err := b.a.session.Load(ctx, o.thread)
+		loaded, err := b.a.session.Load(ctx, o.thread)
 		if err != nil {
 			return nil, err
 		}
-		if sess != nil {
-			msgs, pending, paused = sess.Messages, sess.Pending, sess.Paused
+		if loaded != nil {
+			sess = loaded
+			msgs, pending, paused = loaded.Messages, loaded.Pending, loaded.Paused
 		}
 	}
 	schema, wrapped, err := outputSchema(o.output)
@@ -416,8 +418,8 @@ func (b *boxHost) run(ctx context.Context, prompt string, emit func(Event), o ru
 		return nil, err
 	}
 	if o.thread != "" {
-		if err := b.a.session.Save(ctx, &Session{ID: o.thread, Messages: res.Messages,
-			Pending: res.Interrupts, Paused: res.Paused, Updated: now()}); err != nil {
+		sess.Messages, sess.Pending, sess.Paused = res.Messages, res.Interrupts, res.Paused
+		if err := b.a.session.Save(ctx, sess); err != nil {
 			return nil, err
 		}
 	}

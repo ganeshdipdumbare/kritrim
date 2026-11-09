@@ -23,7 +23,8 @@ hash-chained audit, Docker/Local sandboxes, sealed whole-agent mode.
 - Agents-as-tools: `Agent.AsTool`.
 
 **Gate:** pause in one agent, resume in another over `FileSessions`; reject
-path; double resume conflict; tool runs once; retry and fallback tests.
+path; double resume conflict; tool runs once; retry and fallback tests; sealed
+pause and resume across a real box restart (`internal/boxtest`).
 
 ## v0.3 — A2A + evals (shipped)
 
@@ -38,7 +39,8 @@ path; double resume conflict; tool runs once; retry and fallback tests.
 **Gate:** in-process client↔server card/send/stream; interrupt round-trip;
 auth rejection; context isolation.
 
-**Still open:** SQL task store, push notifications, file parts, OAuth/SigV4.
+**Still open:** push notifications, file parts, OAuth/SigV4. SQL task store is
+available via `a2a.SQLTasks`.
 
 ### Evals (`evals/`, `cmd/kritrim-evals`)
 - `Case`, `Experiment`, `Report`, bounded concurrency, `DirCache`.
@@ -47,11 +49,14 @@ auth rejection; context isolation.
 - Detectors: run error, empty output, max steps, pending approval, tool error,
   approval rejected, repeated call loop.
 - CLI: `report` (exit 1 on failure), `diagnose`.
+- `GenerateCases` from an agent description and `Simulate` multi-turn user
+  sessions.
+- `RunRedTeam` probes for injection, exfiltration and destructive tools.
 
 **Gate:** deterministic evaluator fixtures; judge with Mock; cache hit;
-concurrency; report rendering.
+concurrency; report rendering; generator/simulator/red-team tests.
 
-**Still open:** user/tool simulators, red-team suite, case generation.
+**Still open:** richer red-team suites and remote-trace evaluation.
 
 ## v0.4 — connect + sandboxes (shipped)
 
@@ -97,6 +102,8 @@ Shipped:
 - `Config.Fallback` model routing on retryable failures.
 - Helpers for DeepSeek, Groq, Mistral, OpenRouter, LiteLLM.
 - Evals red-team probes (injection, exfiltration, destructive tools).
+- Evals case generation and multi-turn simulation.
+- Sealed durable approval test across a box restart.
 
 **Still open:** Bedrock and OpenAI Responses providers, prompt caching,
 Cedar-style authorization, steering, notebook/handoff/python vended tools,

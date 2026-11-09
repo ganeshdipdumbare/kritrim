@@ -358,7 +358,8 @@ tool := c.AsTool("triage", "Routes a ticket")
 
 Agent card, `message/send`, `message/stream`, `tasks/get`, `tasks/cancel`, text
 and data parts, per-context isolation, and interrupt/resume are implemented.
-Auth is required; contexts are not an auth boundary.
+Tasks live in memory or SQL (`a2a.SQLTasks`). Auth is required; contexts are
+not an auth boundary.
 
 ## Evals
 
@@ -381,8 +382,10 @@ fmt.Print(report.Summary())
 
 Deterministic evaluators, tool-trajectory checks, token/latency budgets, an
 LLM judge, detectors, a JSON/Markdown report and a disk cache. `evals.RunRedTeam`
-runs prompt-injection, exfiltration and destructive-tool probes. The CLI
-renders and diagnoses reports:
+runs prompt-injection, exfiltration and destructive-tool probes;
+`evals.GenerateCases` proposes cases from an agent description and
+`evals.Simulate` runs a model-played multi-turn user. The CLI renders and
+diagnoses reports:
 
 ```bash
 go run ./cmd/kritrim-evals report report.json
