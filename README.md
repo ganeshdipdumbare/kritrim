@@ -20,7 +20,8 @@ res, err := a.Run(ctx, "Hello")
 fmt.Println(res.Text)
 ```
 
-Requires **Go 1.27**. No third-party dependencies.
+Requires **Go 1.27** (build servers with 1.27.4 or later for the
+`net/http` fix GO-2026-6859). No third-party dependencies.
 
 ## Install
 
@@ -65,8 +66,10 @@ kritrim.Approve() / Reject(why) / Edit(args) / Respond(text) / Pause()
 kritrim.MemorySessions() SessionStore
 kritrim.FileSessions(dir) SessionStore
 kritrim.SQLSessions(db, SQLConfig) (SessionStore, error)
-kritrim.AuditFile(path) AuditSink
-kritrim.VerifyAudit(path) error
+kritrim.AuditFile(path, ...AuditOption) AuditSink
+kritrim.AuditKey(key) AuditOption
+kritrim.VerifyAudit(path, ...AuditOption) error
+kritrim.Chain(...Hooks) Hooks
 
 kritrim.Time() Tool
 kritrim.HTTP(HTTPConfig) Tool
@@ -129,7 +132,10 @@ a, _ := kritrim.New(kritrim.Config{
 })
 ```
 
-The JSON Schema comes from the Go type (`json`, `desc`, `enum`). Mark a tool `Risky` to require approval. `ToolConcurrency > 1` runs the
+The JSON Schema comes from the Go type (`json`, `desc`, `enum`), and the
+model's arguments are validated against it before the tool runs (types,
+required, enum/const, lengths, pattern, ranges, combinators and local
+`$ref`; a keyword that cannot be enforced fails the call). Mark a tool `Risky` to require approval. `ToolConcurrency > 1` runs the
 model's parallel tool calls concurrently (risky tools stay sequential).
 `Agent.CallTool` runs one directly. Built-in tools include time, HTTP, web
 search, shell, files, line-numbered read, write, edit, sleep, stop, notebook
@@ -228,6 +234,13 @@ a, _ := kritrim.New(kritrim.Config{
 
 Hooks run after the built-in security checks; they can mutate requests,
 responses and tool results but cannot grant a capability policy denied.
+Combine hook sets with `kritrim.Chain`; they run in order, so list guards
+before observers:
+
+```go
+Hooks: kritrim.Chain(guard.PII("email"), memory.Inject(store, 5), trace.OTel(otelCfg)),
+```
+
 `Context` trims old messages and optionally summarizes dropped history.
 
 Tools and hooks can read per-session state:
@@ -240,14 +253,30 @@ kritrim.StateFrom(ctx).Set("seen", true)
 
 - **Default deny.** `HTTP` and `Shell` refuse to be constructed without an
   allowlist. `Files` is read-only unless `Write: true`.
-- **SSRF and redirects.** Exact allowlisted hosts may be private; wildcards
-  resolve and must be public; every redirect is re-validated.
-- **No shell interpretation.** `Shell` takes `argv`; `argv[0]` must be allowed.
+- **SSRF, rebinding and redirects.** Exact allowlisted hosts may be private;
+  wildcard hosts must be public, checked at dial time on the connected IP so
+  DNS rebinding cannot reach an internal address; every redirect is
+  re-validated, and a request carrying a secret never follows one to another
+  host.
+- **No shell interpretation.** `Shell` takes `argv`; `argv[0]` must be allowed,
+  on the host, in a sandbox and inside a sealed box.
+- **No inherited credentials.** Shell commands, MCP stdio servers and local
+  boxes get a minimal environment (`PATH`, `HOME`, locale, temp dir); add
+  variables with `ShellConfig.Env` / `MCPConfig.Env`.
+- **Symlink-safe files.** File tools use `os.Root`; a symlink cannot leave the
+  root.
+- **Validated arguments.** Tool arguments must match the tool schema.
 - **Secrets stay out of prompts.** `secret://NAME` is resolved at use and
   redacted from output, events and audit.
 - **Approvals.** Risky tools need `Config.Approve`; without it they are refused.
-- **Limits.** Steps, tool calls, tokens, per-tool timeout, panic recovery.
+- **Limits.** Steps (20), tool calls (100) and tokens (1,000,000) per run by
+  default, per-tool timeout, panic recovery. `Limits.Tokens: -1` removes the
+  token cap. The budget is checked before every model call against the
+  estimated input, and output is capped to what remains.
 - **Tamper-evident audit.** Hash-chained JSON lines; `VerifyAudit` checks them.
+  With `AuditKey(key)` the chain is HMAC-SHA256 and a signed head file detects
+  truncation, so rewriting the log needs the key. A sink verifies an existing
+  log before appending and refuses one it cannot verify.
 - **PII hooks.** `guard.PII("email", "credit_card")` redacts prompts, replies
   and tool results.
 - **Tracing.** `trace.JSON(w)` writes one line per run/model/tool event;
@@ -270,8 +299,12 @@ a, _ := kritrim.New(kritrim.Config{
 
 `Local` exists for development. `sandbox/ssh` runs commands and files on a
 remote host with host-key checking and an SSH option allowlist.
-`DockerConfig{Container: "name"}` attaches to an existing container instead
-of creating one, and `StreamingMachine` streams exec output. Every adapter
+Containers kritrim creates drop all capabilities, set `no-new-privileges`,
+have no network, and are capped at 2 GB memory, 2 CPUs and 512 processes;
+`DockerConfig` has `User`, `ReadOnly`, `Memory`, `CPUs`, `PidsLimit` and
+`CapAdd` to tune that. `DockerConfig{Container: "name"}` attaches to an
+existing container instead of creating one, and `StreamingMachine` streams
+exec output. Every adapter
 must pass `sandbox/sandboxtest.Run`.
 
 ### The agent in a sandbox (sealed)
@@ -309,6 +342,14 @@ default. Model calls, token budgets, secrets, egress, approvals, audit and
 bridged tools all cross the host. Sessions stay on the host, so a box is
 disposable and durable approvals survive a box restart.
 
+The host treats the box as untrusted: identity (user, roles, thread, run)
+comes from the run the host started, a risky bridged tool runs only for a
+call the host approved (once, with exactly the approved arguments), the token
+budget (and the run's `Limits.Tokens`) is checked before every model call,
+host calls are leased to the run and canceled when it ends, secret
+placeholders are random, and audit entries from the box are marked
+`source: "box"`.
+
 For containers, build the box with `go run ./cmd/kritrim box build -o box .`
 (default `linux/amd64`). `Local` needs no binary and requires
 `AllowUnsafeLocal: true`.
@@ -334,7 +375,9 @@ a, _ := kritrim.New(kritrim.Config{
 ```
 
 stdio and Streamable HTTP are supported, with tool namespacing
-(`server__tool`), per-call timeouts, host allowlists and `Risky`. In sealed
+(`server__tool`), per-call timeouts, host allowlists and `Risky`. stdio
+servers do not inherit your environment (pass `Env`), and HTTP servers never
+get a redirect off their host. In sealed
 mode the host connects and bridges the tools into the box automatically.
 
 ## Multi-agent
@@ -385,6 +428,11 @@ Tasks live in memory or SQL (`a2a.SQLTasks`). Auth is required; contexts are not
 OAuth client-credentials grant (`TokenURL`, `ClientID`, `ClientSecret`).
 Push notifications: set `ClientConfig.PushURL` (or `Client.SetPush`) and the
 server POSTs task updates to that webhook, with an optional notification token.
+Push URLs must be public http(s), redirects are not followed, and push header
+values are sent as given (`secret://` is never resolved on the server).
+`Bearer` compares in constant time and refuses an empty token.
+`a2a.Tokens(map[token]principal)` gives each caller its own tasks, contexts
+and push configs; other callers get "task not found".
 
 ## Evals
 
@@ -446,7 +494,12 @@ hook, _ := trigger.Webhook(trigger.WebhookConfig{Agent: agent, Secret: "secret:/
 http.Handle("/hook", hook)
 ```
 
-Webhooks require an HMAC signature and deduplicate `Idempotency-Key` retries.
+Webhooks require `X-Kritrim-Timestamp` and an HMAC-SHA256
+`X-Kritrim-Signature` over timestamp, `Idempotency-Key` and body
+(`trigger.Sign` builds it). Stale requests (default 5 minutes) are refused,
+each delivery runs once even when duplicates arrive concurrently, a key reused
+for a different body gets 409, a full dedupe memory answers 503 instead of
+forgetting deliveries, and run errors are logged rather than returned.
 
 ## Memory
 
@@ -477,7 +530,11 @@ go run ./examples/multiagent
 go test ./...
 go test -race ./...
 go vet ./...
+go test -run='^$' -fuzz=FuzzPaths -fuzztime=30s .
 ```
+
+CI also runs `govulncheck`, `staticcheck` and short fuzzing of the path,
+schema and network-guard code.
 
 ## Status
 
@@ -485,8 +542,8 @@ Released: core loop, providers (OpenAI-compatible, Anthropic, Gemini, Bedrock),
 tools (parallel and direct), sessions (memory/file/SQL), durable approvals,
 hooks, retry, context, state, fork/cancel/idempotency, audit, PII, tracing
 (JSON + OTLP), Docker/SSH/Local sandboxes (attach + streamed exec), sealed
-mode, MCP, A2A, evals, graph/swarm, triggers, memory, skills, plugins, notebook.
+mode (host-enforced approvals, identity and budget), MCP, A2A, evals, graph/swarm, triggers, memory, skills, plugins, notebook.
 
 Not shipped yet: E2B/microsandbox/Firecracker/Tensorlake sandbox adapters (the
-conformance kit and interface are ready), A2A push notifications and file
-parts, OpenAI Responses, Cedar-style authorization, python tools, voice. See [`docs/ROADMAP.md`](docs/ROADMAP.md).
+conformance kit and interface are ready), A2A file parts, Cedar-style
+authorization, python tools, voice. See [`docs/ROADMAP.md`](docs/ROADMAP.md).

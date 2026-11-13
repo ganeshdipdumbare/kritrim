@@ -32,7 +32,7 @@ type localMachine struct{}
 func (m *localMachine) Exec(ctx context.Context, r ExecRequest) (ExecResult, error) {
 	res, err := localExec(ctx, execRequest{Command: r.Command, Dir: r.Dir, Env: r.Env,
 		Stdin: r.Stdin, Timeout: r.Timeout}, false)
-	return ExecResult{Stdout: res.Stdout, Stderr: res.Stderr, Exit: res.Exit}, err
+	return ExecResult(res), err
 }
 
 func (m *localMachine) ExecStream(ctx context.Context, r ExecRequest, emit func(stdout, stderr string)) (ExecResult, error) {
@@ -40,7 +40,7 @@ func (m *localMachine) ExecStream(ctx context.Context, r ExecRequest, emit func(
 		return ExecResult{}, fmt.Errorf("kritrim: empty command")
 	}
 	cmd := exec.CommandContext(ctx, r.Command[0], r.Command[1:]...)
-	cmd.Dir, cmd.Env = r.Dir, append(os.Environ(), r.Env...)
+	cmd.Dir, cmd.Env = r.Dir, childEnv(r.Env)
 	if r.Stdin != nil {
 		cmd.Stdin = bytes.NewReader(r.Stdin)
 	}
@@ -93,7 +93,7 @@ func (m *localMachine) Start(ctx context.Context, r StartRequest) (Process, erro
 		return nil, fmt.Errorf("kritrim: empty command")
 	}
 	cmd := exec.Command(r.Command[0], r.Command[1:]...)
-	cmd.Dir, cmd.Env = r.Dir, append(os.Environ(), r.Env...)
+	cmd.Dir, cmd.Env = r.Dir, childEnv(r.Env)
 	in, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, err

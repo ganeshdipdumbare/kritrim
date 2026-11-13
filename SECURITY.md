@@ -24,6 +24,8 @@ In scope:
 - session versioning and durable approvals,
 - audit hash chaining,
 - A2A auth, push notifications and task handling,
+- webhook trigger signatures and replay protection,
+- tool argument validation and file-root confinement,
 - MCP transports and tool bridging,
 - sandbox adapters (`sandbox/*`).
 
@@ -42,6 +44,11 @@ only with the allowlists their configuration declares. Secrets are resolved at
 the point of use and redacted from output, events and audit. A sealed agent
 runs the loop and its local tools in a sandbox with no API key, no secret value,
 no host filesystem and no network by default; model calls, secrets, egress,
-approvals, audit and bridged tools go through the host. User-written Go tools
-are trusted code and run in the process you compiled them into; put untrusted
-work in a sandbox.
+approvals, audit and bridged tools go through the host. The host treats the box
+as untrusted: identity, approvals and the token budget are enforced on the
+host side. Commands and MCP servers the agent starts do not inherit the host's
+environment, file tools cannot follow symlinks out of their root, tool
+arguments are validated against their schema, and SSRF checks run at dial
+time. With `AuditKey`, the audit log is HMAC-chained and its head is signed.
+User-written Go tools are trusted code and run in the process you compiled
+them into; put untrusted work in a sandbox.

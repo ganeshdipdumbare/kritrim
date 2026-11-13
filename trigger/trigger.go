@@ -9,8 +9,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -122,10 +124,50 @@ type WebhookConfig struct {
 	Prompt func(body []byte) string
 	// MaxBody defaults to 1 MiB.
 	MaxBody int64
+	// Tolerance is how far X-Kritrim-Timestamp may be from now. Default 5m.
+	Tolerance time.Duration
+	// DedupeTTL is how long a delivery is remembered. Default 24h; it is
+	// never shorter than twice Tolerance.
+	DedupeTTL time.Duration
+	// MaxEntries bounds the dedupe memory. Default 100000. When it is full
+	// of unexpired deliveries the webhook answers 503 with Retry-After.
+	MaxEntries int
+	// Logger receives run errors; callers only see "run failed".
+	Logger func(msg string)
 }
 
-// Webhook returns an http.Handler that verifies X-Kritrim-Signature and runs
-// the agent. Idempotency-Key deduplicates retries in memory.
+// Header names used by Webhook and Sign.
+const (
+	SignatureHeader   = "X-Kritrim-Signature"
+	TimestampHeader   = "X-Kritrim-Timestamp"
+	IdempotencyHeader = "Idempotency-Key"
+)
+
+// Sign returns the X-Kritrim-Signature value for a delivery. The MAC covers
+// the timestamp, the idempotency key and the body, so none can be changed
+// or replayed outside the tolerance window.
+//
+//	ts := time.Now()
+//	req.Header.Set(trigger.TimestampHeader, strconv.FormatInt(ts.Unix(), 10))
+//	req.Header.Set(trigger.IdempotencyHeader, key)
+//	req.Header.Set(trigger.SignatureHeader, trigger.Sign(secret, ts, key, body))
+func Sign(secret string, ts time.Time, key string, body []byte) string {
+	return sign([]byte(secret), strconv.FormatInt(ts.Unix(), 10), key, body)
+}
+
+// sign MACs a versioned, length-prefixed encoding of the fields, so no two
+// (timestamp, key, body) triples share a MAC input.
+func sign(secret []byte, ts, key string, body []byte) string {
+	mac := hmac.New(sha256.New, secret)
+	fmt.Fprintf(mac, "kritrim-webhook-v1\n%d:%s\n%d:%s\n%d:", len(ts), ts, len(key), key, len(body))
+	mac.Write(body)
+	return "sha256=" + hex.EncodeToString(mac.Sum(nil))
+}
+
+// Webhook returns an http.Handler that verifies a timestamped HMAC signature
+// and runs the agent once per delivery. A delivery is identified by its
+// Idempotency-Key, or by its signature when there is none; duplicates,
+// including concurrent ones, get the first result.
 func Webhook(cfg WebhookConfig) (http.Handler, error) {
 	if cfg.Agent == nil {
 		return nil, errors.New("trigger: webhook needs an agent")
@@ -140,13 +182,25 @@ func Webhook(cfg WebhookConfig) (http.Handler, error) {
 	if cfg.MaxBody <= 0 {
 		cfg.MaxBody = 1 << 20
 	}
+	if cfg.Tolerance <= 0 {
+		cfg.Tolerance = 5 * time.Minute
+	}
+	if cfg.DedupeTTL <= 0 {
+		cfg.DedupeTTL = 24 * time.Hour
+	}
+	if cfg.DedupeTTL < 2*cfg.Tolerance {
+		cfg.DedupeTTL = 2 * cfg.Tolerance
+	}
+	if cfg.MaxEntries <= 0 {
+		cfg.MaxEntries = 100_000
+	}
 	if cfg.Thread == nil {
 		cfg.Thread = func([]byte) string { return "webhook" }
 	}
 	if cfg.Prompt == nil {
 		cfg.Prompt = defaultPrompt
 	}
-	h := &webhook{cfg: cfg, secret: []byte(secret), seen: map[string]string{}}
+	h := &webhook{cfg: cfg, secret: []byte(secret), seen: map[string]*delivery{}}
 	return h, nil
 }
 
@@ -154,8 +208,20 @@ type webhook struct {
 	cfg    WebhookConfig
 	secret []byte
 	mu     sync.Mutex
-	seen   map[string]string
+	seen   map[string]*delivery
 }
+
+type delivery struct {
+	done    chan struct{}
+	print   string // fingerprint of the signed request
+	out     map[string]any
+	failed  bool
+	expires time.Time
+}
+
+// errBusy means the dedupe memory is full of deliveries that are still
+// running or still replayable; the sender should retry later.
+var errBusy = errors.New("trigger: webhook busy")
 
 func (h *webhook) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -163,46 +229,144 @@ func (h *webhook) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, h.cfg.MaxBody)
-	var body json.RawMessage
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, "bad json", http.StatusBadRequest)
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "body too large", http.StatusRequestEntityTooLarge)
 		return
 	}
-	if !h.valid(r.Header.Get("X-Kritrim-Signature"), body) {
+	ts := r.Header.Get(TimestampHeader)
+	key := r.Header.Get(IdempotencyHeader)
+	sig := r.Header.Get(SignatureHeader)
+	if !h.fresh(ts) || !hmac.Equal([]byte(sig), []byte(sign(h.secret, ts, key, body))) {
 		http.Error(w, "bad signature", http.StatusUnauthorized)
 		return
 	}
-	key := r.Header.Get("Idempotency-Key")
-	if key != "" {
-		h.mu.Lock()
-		if prev, ok := h.seen[key]; ok {
-			h.mu.Unlock()
-			writeJSON(w, http.StatusOK, map[string]any{"text": prev, "duplicate": true})
-			return
-		}
-		h.mu.Unlock()
-	}
-	res, err := h.cfg.Agent.Run(r.Context(), h.cfg.Prompt(body), kritrim.Thread(h.cfg.Thread(body)))
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+	if !json.Valid(body) {
+		http.Error(w, "bad json", http.StatusBadRequest)
 		return
 	}
+	// Separate namespaces so a key can never collide with a signature.
+	id := "sig:" + sig
 	if key != "" {
-		h.mu.Lock()
-		if len(h.seen) > 10000 { // shortcut: fixed cap, use a TTL store for long-lived servers
-			h.seen = map[string]string{}
-		}
-		h.seen[key] = res.Text
-		h.mu.Unlock()
+		id = "key:" + key
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"text": res.Text, "thread": res.Thread, "stop": res.Stop})
+	sum := sha256.Sum256(body)
+	d, leader, err := h.begin(id, hex.EncodeToString(sum[:]))
+	switch {
+	case errors.Is(err, errBusy):
+		w.Header().Set("Retry-After", "5")
+		http.Error(w, "busy", http.StatusServiceUnavailable)
+		return
+	case err != nil:
+		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error()})
+		return
+	}
+	if !leader {
+		select {
+		case <-d.done:
+		case <-r.Context().Done():
+			return
+		}
+		if d.failed {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "run failed"})
+			return
+		}
+		out := map[string]any{"duplicate": true}
+		for k, v := range d.out {
+			out[k] = v
+		}
+		writeJSON(w, http.StatusOK, out)
+		return
+	}
+	// Every registered delivery is completed, even if a callback or the
+	// run panics, so duplicates never wait on an abandoned entry.
+	finished := false
+	defer func() {
+		if !finished {
+			h.finish(id, d, nil)
+		}
+	}()
+	// The run is not tied to this connection: a sender that times out and
+	// retries gets the same result instead of a second run.
+	ctx := context.WithoutCancel(r.Context())
+	res, err := h.cfg.Agent.Run(ctx, h.cfg.Prompt(body), kritrim.Thread(h.cfg.Thread(body)))
+	if err != nil {
+		if h.cfg.Logger != nil {
+			h.cfg.Logger("webhook run: " + err.Error())
+		}
+		finished = true
+		h.finish(id, d, nil)
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "run failed"})
+		return
+	}
+	out := map[string]any{"text": res.Text, "thread": res.Thread, "stop": res.Stop}
+	finished = true
+	h.finish(id, d, out)
+	writeJSON(w, http.StatusOK, out)
 }
 
-func (h *webhook) valid(sig string, body []byte) bool {
-	mac := hmac.New(sha256.New, h.secret)
-	mac.Write(body)
-	want := "sha256=" + hex.EncodeToString(mac.Sum(nil))
-	return hmac.Equal([]byte(sig), []byte(want))
+func (h *webhook) fresh(ts string) bool {
+	n, err := strconv.ParseInt(ts, 10, 64)
+	if err != nil {
+		return false
+	}
+	d := time.Since(time.Unix(n, 0))
+	return d <= h.cfg.Tolerance && d >= -h.cfg.Tolerance
+}
+
+// begin registers a delivery or returns the existing one. A key reused for a
+// different body is a conflict, not a duplicate.
+func (h *webhook) begin(id, print string) (*delivery, bool, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	now := time.Now()
+	if d, ok := h.seen[id]; ok && (now.Before(d.expires) || !isDone(d)) {
+		if d.print != print {
+			return nil, false, errors.New("idempotency key reused for a different payload")
+		}
+		return d, false, nil
+	}
+	if len(h.seen) >= h.cfg.MaxEntries {
+		h.evict(now)
+		if len(h.seen) >= h.cfg.MaxEntries {
+			return nil, false, errBusy
+		}
+	}
+	d := &delivery{done: make(chan struct{}), print: print, expires: now.Add(h.cfg.DedupeTTL)}
+	h.seen[id] = d
+	return d, true, nil
+}
+
+func (h *webhook) finish(id string, d *delivery, out map[string]any) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	d.out, d.failed = out, out == nil
+	// A failed run may be retried by the sender. Only remove the entry this
+	// leader owns.
+	if d.failed && h.seen[id] == d {
+		delete(h.seen, id)
+	}
+	close(d.done)
+}
+
+// evict drops deliveries that are finished and past their TTL. Unexpired
+// entries are kept because their signatures may still be replayed, and
+// in-flight entries are kept so their duplicates never run twice.
+func (h *webhook) evict(now time.Time) {
+	for k, d := range h.seen {
+		if now.After(d.expires) && isDone(d) {
+			delete(h.seen, k)
+		}
+	}
+}
+
+func isDone(d *delivery) bool {
+	select {
+	case <-d.done:
+		return true
+	default:
+		return false
+	}
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

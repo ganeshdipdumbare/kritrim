@@ -143,7 +143,7 @@ func connectMCP(ctx context.Context, cfg MCPConfig, a *Agent) (*mcpClient, error
 	c := &mcpClient{name: cfg.Name, headers: cfg.Headers, risky: cfg.Risky, timeout: cfg.Timeout}
 	if cfg.Command != "" {
 		cmd := exec.Command(cfg.Command, cfg.Args...)
-		cmd.Env = append(os.Environ(), cfg.Env...)
+		cmd.Env = childEnv(cfg.Env)
 		cmd.Stderr = os.Stderr
 		in, err := cmd.StdinPipe()
 		if err != nil {
@@ -169,7 +169,7 @@ func connectMCP(ctx context.Context, cfg MCPConfig, a *Agent) (*mcpClient, error
 		if exact, ok := hostAllowed(u.Hostname(), hosts); !ok {
 			return nil, fmt.Errorf("kritrim: mcp %s: host %q is not allowed", cfg.Name, u.Hostname())
 		} else if !exact {
-			if err := checkPublic(u.Hostname()); err != nil {
+			if err := checkPublic(ctx, u.Hostname()); err != nil {
 				return nil, err
 			}
 		}
@@ -183,7 +183,20 @@ func connectMCP(ctx context.Context, cfg MCPConfig, a *Agent) (*mcpClient, error
 			}
 		}
 		c.url = cfg.URL
-		c.http = &http.Client{Timeout: cfg.Timeout}
+		hc, err := egressClient(&http.Client{Timeout: cfg.Timeout}, hosts)
+		if err != nil {
+			return nil, err
+		}
+		c.http = hc
+		origin := strings.ToLower(u.Host)
+		c.http.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+			// Headers may hold secrets: never follow a redirect off the host
+			// or from https to http.
+			if len(via) >= 5 || strings.ToLower(req.URL.Host) != origin || downgrade(via[0].URL, req.URL) {
+				return http.ErrUseLastResponse
+			}
+			return nil
+		}
 	} else {
 		return nil, fmt.Errorf("kritrim: mcp %s needs Command or URL", cfg.Name)
 	}

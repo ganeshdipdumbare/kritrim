@@ -2,6 +2,8 @@ name: test
 on:
   push:
   pull_request:
+permissions:
+  contents: read
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -10,6 +12,26 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.27"
+          check-latest: true
       - run: test -z "$(gofmt -l .)"
       - run: go vet ./...
-      - run: go test -race ./...
+      - run: go test -race -coverprofile=cover.out ./...
+      - run: go tool cover -func=cover.out | tail -1
+
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.27"
+          check-latest: true
+      - name: govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+      - name: staticcheck
+        run: go run honnef.co/go/tools/cmd/staticcheck@latest ./...
+      - name: fuzz (short)
+        run: |
+          go test -run='^$' -fuzz=FuzzPaths -fuzztime=30s .
+          go test -run='^$' -fuzz=FuzzValue -fuzztime=30s ./internal/jsonschema
+          go test -run='^$' -fuzz=FuzzPublic -fuzztime=30s ./internal/netguard

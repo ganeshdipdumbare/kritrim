@@ -253,6 +253,10 @@ type ShellConfig struct {
 	Allow   []string
 	Dir     string
 	Timeout time.Duration
+	// Env adds KEY=VALUE variables. Commands do not inherit the host
+	// environment beyond PATH, HOME, locale and temp-dir variables, so API
+	// keys never reach them.
+	Env []string
 }
 
 // Shell returns a risky tool that runs a command. There is no shell
@@ -276,7 +280,7 @@ func Shell(cfg ShellConfig) Tool {
 		if len(argv) == 0 {
 			return "", fmt.Errorf("argv is required")
 		}
-		res, err := envOf(ctx).Exec(ctx, execRequest{Command: argv, Dir: cfg.Dir, Timeout: cfg.Timeout, Allow: cfg.Allow})
+		res, err := envOf(ctx).Exec(ctx, execRequest{Command: argv, Dir: cfg.Dir, Env: cfg.Env, Timeout: cfg.Timeout, Allow: cfg.Allow})
 		if err != nil {
 			return "", err
 		}

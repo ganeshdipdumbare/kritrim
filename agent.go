@@ -91,8 +91,11 @@ type Config struct {
 	Logger func(msg string)
 }
 
-// Limits caps one run. Zero means the default (Steps 20, ToolCalls 100) or
-// no limit (Tokens).
+// DefaultTokenLimit is the per-run token cap when Limits.Tokens is zero.
+const DefaultTokenLimit = 1_000_000
+
+// Limits caps one run. Zero means the default (Steps 20, ToolCalls 100,
+// Tokens DefaultTokenLimit). Set Tokens to -1 for no token cap.
 type Limits struct {
 	Steps     int
 	ToolCalls int
@@ -170,6 +173,9 @@ func New(cfg Config) (*Agent, error) {
 	}
 	if cfg.Limits.ToolCalls == 0 {
 		cfg.Limits.ToolCalls = 100
+	}
+	if cfg.Limits.Tokens == 0 {
+		cfg.Limits.Tokens = DefaultTokenLimit
 	}
 	if cfg.Session == nil {
 		cfg.Session = MemorySessions()

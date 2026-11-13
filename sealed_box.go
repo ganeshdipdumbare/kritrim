@@ -20,13 +20,17 @@ func ServeBox(ctx context.Context, r io.Reader, w io.Writer, cfg Config) error {
 	a := newBoxAgent(cfg, p)
 	p.handle("ping", func(context.Context, json.RawMessage) (any, error) { return map[string]bool{"ok": true}, nil })
 	p.handle("tools.add", func(_ context.Context, raw json.RawMessage) (any, error) {
-		var defs []Tool
+		var defs []bridgedTool
 		if err := json.Unmarshal(raw, &defs); err != nil {
 			return nil, err
 		}
-		for _, t := range defs {
-			if _, ok := a.tool(t.Name); ok {
+		for _, d := range defs {
+			if _, ok := a.tool(d.Name); ok {
 				continue
+			}
+			t := d.Tool
+			if d.Risky {
+				t = Risky(t)
 			}
 			a.cfg.Tools = append(a.cfg.Tools, proxyTool(p, t))
 		}
@@ -97,14 +101,16 @@ func newBoxAgent(cfg Config, p *peer) *Agent {
 	if cfg.Limits.ToolCalls == 0 {
 		cfg.Limits.ToolCalls = 100
 	}
+	if cfg.Limits.Tokens == 0 {
+		cfg.Limits.Tokens = DefaultTokenLimit
+	}
 	hm := &hostModel{p: p, chans: map[string]chan Delta{}}
 	cfg.Model = hm
 	cfg.Session = MemorySessions()
 	cfg.Approve = func(ctx context.Context, req Approval) (Decision, error) {
 		var d Decision
-		params := map[string]any{"req": req, "thread": ThreadFrom(ctx), "user": UserFrom(ctx),
-			"run": RunIDFrom(ctx), "roles": RolesFrom(ctx)}
-		if err := p.call(ctx, "approve", params, &d); err != nil {
+		// Identity is not sent: the host uses its own record of the run.
+		if err := p.call(ctx, "approve", map[string]any{"req": req}, &d); err != nil {
 			return d, err
 		}
 		return d, nil
@@ -123,7 +129,7 @@ func newBoxAgent(cfg Config, p *peer) *Agent {
 func (a *Agent) boxRun(ctx context.Context, req runParams, p *peer) (*Result, error) {
 	mem := a.session.(*memSessions)
 	_ = mem.Save(ctx, &Session{ID: req.Thread, Messages: req.Messages, Pending: req.Pending, Paused: req.Paused})
-	opts := []Option{Thread(req.Thread), User(req.User), Roles(req.Roles...), Images(req.Images...)}
+	opts := []Option{Thread(req.Thread), User(req.User), Roles(req.Roles...), Images(req.Images...), RunID(req.Run)}
 	if len(req.Decisions) > 0 {
 		opts = append(opts, Decisions(req.Decisions))
 	}
@@ -216,7 +222,7 @@ func (e *boxEnv) HTTP(ctx context.Context, r httpRequest) (*httpResponse, error)
 }
 
 func (e *boxEnv) Exec(ctx context.Context, r execRequest) (execResult, error) {
-	return localExec(ctx, r, false)
+	return localExec(ctx, r, true)
 }
 
 func (e *boxEnv) ReadFile(ctx context.Context, r fsRequest) ([]byte, error) {
@@ -239,8 +245,7 @@ func proxyTool(p *peer, t Tool) Tool {
 	orig := t
 	t.run = func(ctx context.Context, args map[string]any) (string, error) {
 		var out string
-		params := map[string]any{"name": orig.Name, "args": args, "thread": ThreadFrom(ctx),
-			"user": UserFrom(ctx), "run": RunIDFrom(ctx), "roles": RolesFrom(ctx)}
+		params := map[string]any{"name": orig.Name, "args": args, "call": callIDFrom(ctx)}
 		if err := p.call(ctx, "tool", params, &out); err != nil {
 			return "", err
 		}

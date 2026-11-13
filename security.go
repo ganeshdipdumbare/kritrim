@@ -69,7 +69,11 @@ const (
 	keyRoles
 	keyEnv
 	keyState
+	keyCall
 )
+
+// callIDFrom returns the id of the tool call being run.
+func callIDFrom(ctx context.Context) string { s, _ := ctx.Value(keyCall).(string); return s }
 
 // UserFrom returns the run identity a tool was called with.
 func UserFrom(ctx context.Context) string { s, _ := ctx.Value(keyUser).(string); return s }

@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -16,6 +15,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/ganeshdipdumbare/kritrim/internal/netguard"
 )
 
 // env is the one way tools reach the outside world. The host implements it
@@ -35,6 +36,9 @@ type httpRequest struct {
 	Body       []byte
 	AllowHosts []string
 	Timeout    time.Duration
+	// sensitive is set when a secret was placed in the request; such a
+	// request never follows a redirect to a different host.
+	sensitive bool
 }
 
 type httpResponse struct {
@@ -74,7 +78,7 @@ func newHostEnv(a *Agent) env { return &hostEnv{a: a} }
 
 func (e *hostEnv) HTTP(ctx context.Context, r httpRequest) (*httpResponse, error) {
 	u, err := url.Parse(r.URL)
-	if err != nil || u.Host == "" {
+	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
 		return nil, fmt.Errorf("kritrim: invalid URL %q", r.URL)
 	}
 	exact, ok := hostAllowed(u.Hostname(), r.AllowHosts)
@@ -82,7 +86,7 @@ func (e *hostEnv) HTTP(ctx context.Context, r httpRequest) (*httpResponse, error
 		return nil, fmt.Errorf("kritrim: host %q is not allowed", u.Hostname())
 	}
 	if !exact {
-		if err := checkPublic(u.Hostname()); err != nil {
+		if err := checkPublic(ctx, u.Hostname()); err != nil {
 			return nil, err
 		}
 	}
@@ -92,28 +96,45 @@ func (e *hostEnv) HTTP(ctx context.Context, r httpRequest) (*httpResponse, error
 	}
 	cctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	method := r.Method
+	method := strings.ToUpper(r.Method)
 	if method == "" {
 		method = http.MethodGet
+	}
+	if !validMethod(method) {
+		return nil, fmt.Errorf("kritrim: HTTP method %q is not allowed", r.Method)
 	}
 	req, err := http.NewRequestWithContext(cctx, method, u.String(), bytes.NewReader(r.Body))
 	if err != nil {
 		return nil, err
 	}
+	sensitive := r.sensitive
 	for k, v := range r.Headers {
-		req.Header.Set(k, e.secrets(ctx, v))
+		resolved := e.secrets(ctx, v)
+		if resolved != v {
+			sensitive = true
+		}
+		req.Header.Set(k, resolved)
 	}
-	client := *e.a.cfg.httpClient()
+	client, err := egressClient(e.a.cfg.httpClient(), r.AllowHosts)
+	if err != nil {
+		return nil, err
+	}
+	origin := strings.ToLower(u.Host)
 	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
 		if len(via) >= 5 {
 			return errors.New("too many redirects")
+		}
+		if sensitive && (strings.ToLower(req.URL.Host) != origin || downgrade(via[0].URL, req.URL)) {
+			// Never carry a secret to another host or over plaintext; hand
+			// back the 3xx.
+			return http.ErrUseLastResponse
 		}
 		exact, ok := hostAllowed(req.URL.Hostname(), r.AllowHosts)
 		if !ok {
 			return fmt.Errorf("kritrim: redirect to %q is not allowed", req.URL.Hostname())
 		}
 		if !exact {
-			return checkPublic(req.URL.Hostname())
+			return checkPublic(req.Context(), req.URL.Hostname())
 		}
 		return nil
 	}
@@ -127,6 +148,50 @@ func (e *hostEnv) HTTP(ctx context.Context, r httpRequest) (*httpResponse, error
 		return nil, err
 	}
 	return &httpResponse{Status: resp.StatusCode, Header: resp.Header, Body: body}, nil
+}
+
+func validMethod(m string) bool {
+	switch m {
+	case http.MethodGet, http.MethodHead, http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
+		return true
+	}
+	return false
+}
+
+// egressClient returns a client for one brokered request. When the rules
+// contain a wildcard, the dialer re-checks every connected IP so DNS
+// rebinding cannot reach a private address; exact hosts are trusted.
+//
+// A Config.Client whose Transport is not an *http.Transport cannot be
+// guarded; requests to wildcard rules are then refused rather than sent
+// unguarded.
+func egressClient(base *http.Client, rules []string) (*http.Client, error) {
+	if !hasWildcard(rules) {
+		cp := *base
+		return &cp, nil
+	}
+	c, ok := netguard.Client(base, func(host string) bool {
+		exact, ok := hostAllowed(host, rules)
+		return ok && exact
+	})
+	if !ok {
+		return nil, errors.New("kritrim: wildcard egress needs Config.Client to use an *http.Transport so connections can be checked")
+	}
+	return c, nil
+}
+
+// downgrade reports a redirect from https to plain http.
+func downgrade(from, to *url.URL) bool {
+	return strings.EqualFold(from.Scheme, "https") && !strings.EqualFold(to.Scheme, "https")
+}
+
+func hasWildcard(rules []string) bool {
+	for _, r := range rules {
+		if strings.HasPrefix(strings.TrimSpace(r), "*.") {
+			return true
+		}
+	}
+	return false
 }
 
 // httpClient returns the configured client or a default one.
@@ -155,24 +220,36 @@ func (e *hostEnv) secrets(ctx context.Context, s string) string {
 }
 
 func (e *hostEnv) Exec(ctx context.Context, r execRequest) (execResult, error) {
+	if err := checkCommand(r); err != nil {
+		return execResult{}, err
+	}
 	if e.a.machine != nil {
 		res, err := e.a.machine.Exec(ctx, ExecRequest{Command: r.Command, Dir: r.Dir, Env: r.Env,
 			Stdin: r.Stdin, Timeout: r.Timeout})
-		return execResult{Stdout: res.Stdout, Stderr: res.Stderr, Exit: res.Exit}, err
+		return execResult(res), err
 	}
 	return localExec(ctx, r, true)
 }
 
+// checkCommand enforces the allowlist. It runs on the host and inside a
+// box, whatever executes the command.
+func checkCommand(r execRequest) error {
+	if len(r.Allow) == 0 {
+		return errors.New("kritrim: exec denied: no allowed commands configured")
+	}
+	if len(r.Command) == 0 {
+		return errors.New("kritrim: empty command")
+	}
+	if !commandAllowed(r.Command[0], r.Allow) {
+		return fmt.Errorf("kritrim: command %q is not allowed", r.Command[0])
+	}
+	return nil
+}
+
 func localExec(ctx context.Context, r execRequest, check bool) (execResult, error) {
 	if check {
-		if len(r.Allow) == 0 {
-			return execResult{}, errors.New("kritrim: exec denied: no allowed commands configured")
-		}
-		if len(r.Command) == 0 {
-			return execResult{}, errors.New("kritrim: empty command")
-		}
-		if !commandAllowed(r.Command[0], r.Allow) {
-			return execResult{}, fmt.Errorf("kritrim: command %q is not allowed", r.Command[0])
+		if err := checkCommand(r); err != nil {
+			return execResult{}, err
 		}
 	}
 	if len(r.Command) == 0 {
@@ -186,7 +263,7 @@ func localExec(ctx context.Context, r execRequest, check bool) (execResult, erro
 	defer cancel()
 	cmd := exec.CommandContext(cctx, r.Command[0], r.Command[1:]...)
 	cmd.Dir = r.Dir
-	cmd.Env = append(os.Environ(), r.Env...)
+	cmd.Env = childEnv(r.Env)
 	cmd.Stdin = strings.NewReader(string(r.Stdin))
 	var out, errb strings.Builder
 	cmd.Stdout, cmd.Stderr = &out, &errb
@@ -215,11 +292,12 @@ func (e *hostEnv) ReadFile(ctx context.Context, r fsRequest) ([]byte, error) {
 }
 
 func localRead(r fsRequest) ([]byte, error) {
-	p, err := underRoot(r.Path, r.Root)
+	root, rel, err := openUnder(r.Path, r.Root)
 	if err != nil {
 		return nil, err
 	}
-	return os.ReadFile(p)
+	defer root.Close()
+	return root.ReadFile(rel)
 }
 
 func (e *hostEnv) WriteFile(ctx context.Context, r fsRequest) error {
@@ -240,20 +318,49 @@ func localWrite(r fsRequest) error {
 	if r.ReadOnly {
 		return errors.New("kritrim: files tool is read-only")
 	}
-	p, err := underRoot(r.Path, r.Root)
+	root, rel, err := openUnder(r.Path, r.Root)
 	if err != nil {
 		return err
+	}
+	defer root.Close()
+	if rel == "." {
+		return fmt.Errorf("kritrim: %q is the root directory", r.Path)
 	}
 	mode := r.Mode
 	if mode == 0 {
 		mode = 0o644
 	}
-	if p != r.Root {
-		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+	if dir := filepath.Dir(rel); dir != "." {
+		if err := root.MkdirAll(dir, 0o755); err != nil {
 			return err
 		}
 	}
-	return os.WriteFile(p, r.Data, mode)
+	return root.WriteFile(rel, r.Data, mode)
+}
+
+// openUnder opens root as an os.Root and returns path relative to it. The
+// os.Root resolves symlinks itself and refuses any that leave the root.
+func openUnder(path, root string) (*os.Root, string, error) {
+	abs, err := underRoot(path, root)
+	if err != nil {
+		return nil, "", err
+	}
+	if root == "" {
+		root = "."
+	}
+	absRoot, err := filepath.Abs(root)
+	if err != nil {
+		return nil, "", err
+	}
+	rel, err := filepath.Rel(absRoot, abs)
+	if err != nil {
+		return nil, "", err
+	}
+	rt, err := os.OpenRoot(absRoot)
+	if err != nil {
+		return nil, "", err
+	}
+	return rt, rel, nil
 }
 
 func (e *hostEnv) Secret(ctx context.Context, name string) (string, error) {
@@ -340,18 +447,25 @@ func commandAllowed(name string, allow []string) bool {
 	return false
 }
 
-func checkPublic(host string) error {
-	ips, err := net.LookupIP(host)
-	if err != nil {
-		return fmt.Errorf("kritrim: resolve %q: %w", host, err)
-	}
-	for _, ip := range ips {
-		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsUnspecified() {
-			// shortcut: DNS is resolved here and again by the client, so a
-			// rebinding answer can slip through; re-check at the dialer when
-			// untrusted hosts are allowed.
-			return fmt.Errorf("kritrim: host %q resolves to a private address", host)
-		}
+func checkPublic(ctx context.Context, host string) error {
+	if err := netguard.CheckHost(ctx, host); err != nil {
+		return fmt.Errorf("kritrim: %w", err)
 	}
 	return nil
 }
+
+// childEnv is the environment of a command the agent starts: a small set of
+// harmless variables from the host plus extra. The host's API keys and
+// credentials are never inherited.
+func childEnv(extra []string) []string {
+	var env []string
+	for _, k := range inheritedEnv {
+		if v, ok := os.LookupEnv(k); ok {
+			env = append(env, k+"="+v)
+		}
+	}
+	return append(env, extra...)
+}
+
+var inheritedEnv = []string{"PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "LC_ALL", "LC_CTYPE",
+	"TZ", "TERM", "TMPDIR", "TMP", "TEMP", "SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "COMSPEC", "PATHEXT"}

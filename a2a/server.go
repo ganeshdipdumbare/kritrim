@@ -2,6 +2,8 @@ package a2a
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,17 +21,72 @@ type Auth interface {
 }
 
 // Bearer accepts "Authorization: Bearer <token>". Read the token from the
-// environment or a secret store; never hard-code it.
+// environment or a secret store; never hard-code it. NewServer refuses an
+// empty token, and an empty token never authenticates.
 func Bearer(token string) Auth { return bearerAuth(token) }
 
 type bearerAuth string
 
 func (b bearerAuth) Check(r *http.Request) error {
-	if r.Header.Get("Authorization") != "Bearer "+string(b) {
+	got, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	want := sha256.Sum256([]byte(b))
+	have := sha256.Sum256([]byte(got))
+	if b == "" || !ok || subtle.ConstantTimeCompare(want[:], have[:]) != 1 {
 		return errors.New("a2a: unauthorized")
 	}
 	return nil
 }
+
+// Principal is implemented by an Auth that can tell callers apart. When the
+// server's Auth implements it, every task, context and push config belongs
+// to the caller that created it, and other callers get "task not found".
+type Principal interface {
+	Principal(r *http.Request) string
+}
+
+// Tokens accepts several bearer tokens, each naming a principal (tenant,
+// service or user). Tasks and contexts are isolated per principal.
+//
+//	Auth: a2a.Tokens(map[string]string{os.Getenv("TOKEN_A"): "billing", os.Getenv("TOKEN_B"): "support"})
+func Tokens(tokens map[string]string) Auth {
+	t := tokenAuth{}
+	for tok, who := range tokens {
+		t = append(t, tokenEntry{sum: sha256.Sum256([]byte(tok)), who: who, empty: strings.TrimSpace(tok) == "" || who == ""})
+	}
+	return t
+}
+
+type tokenEntry struct {
+	sum   [32]byte
+	who   string
+	empty bool
+}
+
+type tokenAuth []tokenEntry
+
+func (t tokenAuth) match(r *http.Request) (string, bool) {
+	got, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if !ok || got == "" {
+		return "", false
+	}
+	have := sha256.Sum256([]byte(got))
+	who, found := "", false
+	for _, e := range t { // no early exit: constant time in the token count
+		if subtle.ConstantTimeCompare(e.sum[:], have[:]) == 1 && !e.empty {
+			who, found = e.who, true
+		}
+	}
+	return who, found
+}
+
+func (t tokenAuth) Check(r *http.Request) error {
+	if _, ok := t.match(r); !ok {
+		return errors.New("a2a: unauthorized")
+	}
+	return nil
+}
+
+func (t tokenAuth) Principal(r *http.Request) string { who, _ := t.match(r); return who }
 
 // AllowAll disables authentication. Development only.
 func AllowAll() Auth { return allowAll{} }
@@ -122,6 +179,19 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 	if cfg.Auth == nil {
 		return nil, errors.New("a2a: ServerConfig.Auth is required (use AllowAll only for development)")
 	}
+	if b, ok := cfg.Auth.(bearerAuth); ok && strings.TrimSpace(string(b)) == "" {
+		return nil, errors.New("a2a: Bearer token is empty")
+	}
+	if t, ok := cfg.Auth.(tokenAuth); ok {
+		if len(t) == 0 {
+			return nil, errors.New("a2a: Tokens needs at least one token")
+		}
+		for _, e := range t {
+			if e.empty {
+				return nil, errors.New("a2a: Tokens has an empty token or principal")
+			}
+		}
+	}
 	if cfg.Tasks == nil {
 		cfg.Tasks = MemoryTasks()
 	}
@@ -146,10 +216,14 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 	if cfg.PushClient == nil {
 		cfg.PushClient = &http.Client{Timeout: 5 * time.Second}
 	}
+	pushClient, err := pushHTTPClient(cfg.PushClient, cfg.PushAllowPrivate)
+	if err != nil {
+		return nil, err
+	}
 	cfg.Card.Capabilities.Streaming = true
 	cfg.Card.Capabilities.PushNotifications = true
 	return &Server{cfg: cfg, contexts: map[string]*contextEntry{}, cancels: map[string]context.CancelFunc{},
-		pushClient: cfg.PushClient}, nil
+		pushClient: pushClient}, nil
 }
 
 // Close closes every cached agent.
@@ -234,7 +308,18 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request, id json.RawMessage
 	if taskID == "" {
 		taskID = newID()
 	}
-	agent, err := s.agent(ctxID)
+	who := s.principal(r)
+	if existing, err := s.cfg.Tasks.Get(r.Context(), taskID); err == nil && existing != nil && existing.Owner != who {
+		s.fail(w, id, -32001, "task not found")
+		return
+	}
+	if p.Configuration != nil && p.Configuration.PushNotificationConfig != nil {
+		if err := s.validatePush(r.Context(), *p.Configuration.PushNotificationConfig); err != nil {
+			s.fail(w, id, -32602, err.Error())
+			return
+		}
+	}
+	agent, err := s.agent(who, ctxID)
 	if err != nil {
 		s.fail(w, id, -32603, err.Error())
 		return
@@ -259,7 +344,7 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request, id json.RawMessage
 
 	task, _ := s.cfg.Tasks.Get(ctx, taskID)
 	if task == nil {
-		task = &Task{ID: taskID, ContextID: ctxID, Status: TaskStatus{State: StateSubmitted, Timestamp: now()}}
+		task = &Task{ID: taskID, ContextID: ctxID, Owner: who, Status: TaskStatus{State: StateSubmitted, Timestamp: now()}}
 	}
 	if p.Configuration != nil && p.Configuration.PushNotificationConfig != nil {
 		_ = s.cfg.Push.Set(ctx, taskID, *p.Configuration.PushNotificationConfig)
@@ -269,7 +354,7 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request, id json.RawMessage
 	_ = s.cfg.Tasks.Put(ctx, task)
 	s.notify(ctx, task)
 
-	opts := []kritrim.Option{kritrim.Thread(ctxID)}
+	opts := []kritrim.Option{kritrim.Thread(threadID(who, ctxID))}
 	if len(decisions) > 0 {
 		opts = append(opts, kritrim.Decisions(decisions))
 	}
@@ -364,8 +449,8 @@ func (s *Server) taskGet(w http.ResponseWriter, r *http.Request, id json.RawMess
 		s.fail(w, id, -32602, "id is required")
 		return
 	}
-	t, err := s.cfg.Tasks.Get(r.Context(), p.ID)
-	if err != nil || t == nil {
+	t := s.ownedTask(r, p.ID)
+	if t == nil {
 		s.fail(w, id, -32001, "task not found")
 		return
 	}
@@ -380,16 +465,16 @@ func (s *Server) taskCancel(w http.ResponseWriter, r *http.Request, id json.RawM
 		s.fail(w, id, -32602, "id is required")
 		return
 	}
+	t := s.ownedTask(r, p.ID)
+	if t == nil {
+		s.fail(w, id, -32001, "task not found")
+		return
+	}
 	s.mu.Lock()
 	cancel := s.cancels[p.ID]
 	s.mu.Unlock()
 	if cancel != nil {
 		cancel()
-	}
-	t, err := s.cfg.Tasks.Get(r.Context(), p.ID)
-	if err != nil || t == nil {
-		s.fail(w, id, -32001, "task not found")
-		return
 	}
 	t.Status = TaskStatus{State: StateCanceled, Timestamp: now()}
 	_ = s.cfg.Tasks.Put(r.Context(), t)
@@ -408,9 +493,36 @@ func (s *Server) fail(w http.ResponseWriter, id json.RawMessage, code int, msg s
 		"error": map[string]any{"code": code, "message": msg}})
 }
 
-func (s *Server) agent(ctxID string) (*kritrim.Agent, error) {
+// principal is the caller's identity, or "" when Auth cannot tell callers
+// apart.
+func (s *Server) principal(r *http.Request) string {
+	if p, ok := s.cfg.Auth.(Principal); ok {
+		return p.Principal(r)
+	}
+	return ""
+}
+
+// ownedTask returns the task if it exists and belongs to the caller.
+func (s *Server) ownedTask(r *http.Request, taskID string) *Task {
+	t, err := s.cfg.Tasks.Get(r.Context(), taskID)
+	if err != nil || t == nil || t.Owner != s.principal(r) {
+		return nil
+	}
+	return t
+}
+
+// threadID keeps each principal's conversations apart in the session store.
+func threadID(who, ctxID string) string {
+	if who == "" {
+		return ctxID
+	}
+	return who + ":" + ctxID
+}
+
+func (s *Server) agent(who, ctxID string) (*kritrim.Agent, error) {
+	key := who + "\x00" + ctxID
 	s.mu.Lock()
-	if e := s.contexts[ctxID]; e != nil {
+	if e := s.contexts[key]; e != nil {
 		e.used = time.Now()
 		s.mu.Unlock()
 		return e.agent, nil
@@ -424,7 +536,7 @@ func (s *Server) agent(ctxID string) (*kritrim.Agent, error) {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if e := s.contexts[ctxID]; e != nil {
+	if e := s.contexts[key]; e != nil {
 		_ = a.Close() // another request won the race
 		e.used = time.Now()
 		return e.agent, nil
@@ -442,7 +554,7 @@ func (s *Server) agent(ctxID string) (*kritrim.Agent, error) {
 			delete(s.contexts, oldestID)
 		}
 	}
-	s.contexts[ctxID] = &contextEntry{agent: a, used: time.Now()}
+	s.contexts[key] = &contextEntry{agent: a, used: time.Now()}
 	return a, nil
 }
 

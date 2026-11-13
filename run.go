@@ -227,6 +227,9 @@ func (a *Agent) loop(ctx context.Context, sess *Session, msgs []Message, ps *Pau
 		if herr := a.cfg.Hooks.beforeModel(ctx, &req); herr != nil {
 			return nil, herr
 		}
+		if err := fitBudget(&req, usage.Total(), a.cfg.Limits.Tokens); err != nil {
+			return nil, err
+		}
 		resp, err := a.modelStream(ctx, &req, emit)
 		if err != nil {
 			a.audit(ctx, o, "model", a.Model(), "error: "+err.Error())
@@ -308,7 +311,11 @@ func (a *Agent) loop(ctx context.Context, sess *Session, msgs []Message, ps *Pau
 				SchemaName:  "output",
 				Cache:       a.cfg.PromptCache,
 			}
-			resp, rerr := a.modelGenerate(ctx, &req)
+			rerr := fitBudget(&req, usage.Total(), a.cfg.Limits.Tokens)
+			var resp *Response
+			if rerr == nil {
+				resp, rerr = a.modelGenerate(ctx, &req)
+			}
 			if rerr == nil {
 				usage = usage.Add(resp.Usage)
 				text = resp.Text
@@ -461,7 +468,10 @@ func (a *Agent) executeCall(ctx context.Context, o runOptions, call ToolCall, em
 		}
 	}
 
-	tctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	if err := tool.checkArgs(call.Args); err != nil {
+		return ToolResult{CallID: call.ID, Name: tool.Name, Content: "error: " + err.Error(), IsError: true}, nil
+	}
+	tctx, cancel := context.WithTimeout(context.WithValue(ctx, keyCall, call.ID), 2*time.Minute)
 	defer cancel()
 	content, err := runTool(tctx, tool, call.Args)
 	res := ToolResult{CallID: call.ID, Name: tool.Name, Content: content}
@@ -593,6 +603,36 @@ func (a *Agent) auditModel(ctx context.Context, o runOptions, total Usage, resp 
 }
 
 func (c Config) maxTokens() int { return c.MaxOutputTokens }
+
+// fitBudget runs before every model call. With a token limit it refuses a
+// call whose estimated input does not fit in what is left, and caps the
+// output so input plus output stay within the limit. limit <= 0 means none.
+func fitBudget(req *Request, used, limit int) error {
+	if limit <= 0 {
+		return nil
+	}
+	left := limit - used
+	in := estimateRequest(req)
+	if left <= 0 || in >= left {
+		return fmt.Errorf("kritrim: token budget %d exceeded (%d used, about %d needed for the input)", limit, used, in)
+	}
+	out := left - in
+	// Only cap an unset output limit when it is small: provider defaults
+	// are lower than most budgets, and huge values are rejected.
+	if (req.MaxTokens > 0 && req.MaxTokens > out) || (req.MaxTokens <= 0 && out < 4096) {
+		req.MaxTokens = out
+	}
+	return nil
+}
+
+// estimateRequest is a coarse input-token estimate for a request.
+func estimateRequest(req *Request) int {
+	n := estimateTokens(req.Messages) + len(req.System)/4
+	for _, t := range req.Tools {
+		n += (len(t.Name) + len(t.Description) + len(jsonString(t.Schema))) / 4
+	}
+	return n
+}
 
 func jsonString(v any) string {
 	b, err := json.Marshal(v)

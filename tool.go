@@ -126,3 +126,16 @@ func (t Tool) validate() error {
 	}
 	return jsonschema.Validate(t.Schema)
 }
+
+// checkArgs validates model-supplied arguments against the tool schema before
+// the tool runs. A nil args map is treated as an empty object.
+func (t Tool) checkArgs(args map[string]any) error {
+	var v any = map[string]any{}
+	if args != nil {
+		v = args
+	}
+	if err := jsonschema.Value(t.Schema, v); err != nil {
+		return fmt.Errorf("invalid arguments for %s: %w", t.Name, err)
+	}
+	return nil
+}

@@ -99,6 +99,10 @@ type Task struct {
 	Status    TaskStatus `json:"status"`
 	Artifacts []Artifact `json:"artifacts,omitempty"`
 	History   []Message  `json:"history,omitempty"`
+	// Owner is the principal that created the task when Auth implements
+	// Principal. Only that caller can read, continue, cancel or subscribe
+	// to it.
+	Owner string `json:"owner,omitempty"`
 }
 
 // TaskStatus is the current state of a task.

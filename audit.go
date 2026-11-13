@@ -3,6 +3,7 @@ package kritrim
 import (
 	"bufio"
 	"context"
+	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -29,24 +30,62 @@ type Entry struct {
 	Run    string `json:"run,omitempty"`
 	Thread string `json:"thread,omitempty"`
 	User   string `json:"user,omitempty"`
+	// Source is "box" for entries written by a sealed box.
+	Source string `json:"source,omitempty"`
 	Prev   string `json:"prev"`
 	Hash   string `json:"hash"`
 }
 
+// AuditOption configures AuditFile and VerifyAudit.
+type AuditOption func(*auditOptions)
+
+type auditOptions struct{ key []byte }
+
+// AuditKey makes the log tamper-evident against someone who can write the
+// file: every entry is chained with HMAC-SHA256 under key, and a signed head
+// file (path + ".head") records the last entry so truncation is detected.
+// Use at least 32 random bytes kept outside the log's host (a KMS or secret
+// store). Without a key the chain is plain SHA-256: it catches accidental
+// corruption but anyone with write access can recompute it.
+//
+// A nil or short key is an error, never a silent fallback to an unkeyed log.
+// An existing log must have been written with the same key: AuditFile
+// verifies it before the first append and refuses to extend a log it cannot
+// verify.
+func AuditKey(key []byte) AuditOption {
+	// Never nil, so an empty key fails the length check instead of turning
+	// signing off.
+	return func(o *auditOptions) { o.key = append([]byte{}, key...) }
+}
+
 // AuditFile returns a sink that appends hash-chained JSON lines to path.
 // VerifyAudit checks the chain later.
-func AuditFile(path string) AuditSink { return &fileAudit{path: path} }
+func AuditFile(path string, opts ...AuditOption) AuditSink {
+	var o auditOptions
+	for _, fn := range opts {
+		fn(&o)
+	}
+	return &fileAudit{path: path, key: o.key}
+}
+
+// errAuditKey is returned when a key is set but too short to be safe.
+var errAuditKey = errors.New("kritrim: audit key must be at least 32 bytes")
 
 type fileAudit struct {
-	mu   sync.Mutex
-	path string
-	prev string
-	seq  int
+	mu     sync.Mutex
+	path   string
+	key    []byte
+	prev   string
+	seq    int
+	loaded bool // seq and prev reflect the file on disk
 }
 
 func (a *fileAudit) Write(ctx context.Context, e Entry) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if a.key != nil && len(a.key) < 32 {
+		return errAuditKey
+	}
 	if err := os.MkdirAll(filepath.Dir(a.path), 0o700); err != nil {
 		return err
 	}
@@ -55,36 +94,101 @@ func (a *fileAudit) Write(ctx context.Context, e Entry) error {
 		return err
 	}
 	defer f.Close()
-	if a.seq == 0 && a.prev == "" {
-		last, err := lastEntry(a.path)
-		if err != nil {
-			return fmt.Errorf("kritrim: audit log %s: %w", a.path, err)
-		}
-		if last != nil {
-			a.seq, a.prev = last.Seq, last.Hash
+	if !a.loaded {
+		if err := a.load(); err != nil {
+			return err
 		}
 	}
+	// Any failure below leaves the file in an unknown state: reload and
+	// re-verify it before the next append instead of trusting memory.
+	ok := false
+	defer func() {
+		if !ok {
+			a.loaded, a.seq, a.prev = false, 0, ""
+		}
+	}()
 	a.seq++
 	e.Seq = a.seq
 	if e.Time == 0 {
 		e.Time = time.Now().UnixMilli()
 	}
 	e.Prev = a.prev
-	e.Hash = hashEntry(e)
-	a.prev = e.Hash
+	e.Hash = hashEntry(e, a.key)
 	b, err := json.Marshal(e)
 	if err != nil {
 		return err
 	}
-	_, err = f.Write(append(b, '\n'))
-	return err
+	if _, err := f.Write(append(b, '\n')); err != nil {
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		return err
+	}
+	if a.key != nil {
+		if err := writeHead(a.path, a.key, e.Seq, e.Hash); err != nil {
+			return err
+		}
+	}
+	a.prev = e.Hash
+	ok = true
+	return nil
 }
 
-func hashEntry(e Entry) string {
+// load verifies the existing log with this sink's key (or as a plain chain)
+// and resumes after its last entry. A log that fails verification, was
+// written with another key, or lost its head is never extended.
+func (a *fileAudit) load() error {
+	last, err := lastEntry(a.path)
+	if err != nil {
+		return fmt.Errorf("kritrim: audit log %s: %w", a.path, err)
+	}
+	if last != nil {
+		var opts []AuditOption
+		if a.key != nil {
+			opts = append(opts, AuditKey(a.key))
+		}
+		if err := VerifyAudit(a.path, opts...); err != nil {
+			return fmt.Errorf("kritrim: refusing to append to audit log %s: %w", a.path, err)
+		}
+		a.seq, a.prev = last.Seq, last.Hash
+	}
+	a.loaded = true
+	return nil
+}
+
+func hashEntry(e Entry, key []byte) string {
 	e.Hash = ""
 	b, _ := json.Marshal(e)
+	if key != nil {
+		m := hmac.New(sha256.New, key)
+		m.Write([]byte(e.Prev))
+		m.Write(b)
+		return hex.EncodeToString(m.Sum(nil))
+	}
 	sum := sha256.Sum256(append([]byte(e.Prev), b...))
 	return hex.EncodeToString(sum[:])
+}
+
+// auditHead is the signed record of the last entry, kept next to the log.
+type auditHead struct {
+	Seq  int    `json:"seq"`
+	Hash string `json:"hash"`
+	MAC  string `json:"mac"`
+}
+
+func headMAC(key []byte, seq int, hash string) string {
+	m := hmac.New(sha256.New, key)
+	fmt.Fprintf(m, "kritrim-audit-head\x00%d\x00%s", seq, hash)
+	return hex.EncodeToString(m.Sum(nil))
+}
+
+func writeHead(path string, key []byte, seq int, hash string) error {
+	b, _ := json.Marshal(auditHead{Seq: seq, Hash: hash, MAC: headMAC(key, seq, hash)})
+	tmp := path + ".head.tmp"
+	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path+".head")
 }
 
 func lastEntry(path string) (*Entry, error) {
@@ -113,8 +217,17 @@ func lastEntry(path string) (*Entry, error) {
 	return last, sc.Err()
 }
 
-// VerifyAudit checks that every entry's hash and prev link are intact.
-func VerifyAudit(path string) error {
+// VerifyAudit checks that every entry's hash and prev link are intact. With
+// AuditKey it also checks every HMAC and the signed head, so a rewritten or
+// truncated log fails.
+func VerifyAudit(path string, opts ...AuditOption) error {
+	var o auditOptions
+	for _, fn := range opts {
+		fn(&o)
+	}
+	if o.key != nil && len(o.key) < 32 {
+		return errAuditKey
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return err
@@ -123,6 +236,8 @@ func VerifyAudit(path string) error {
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 0, 64*1024), 1<<22)
 	prev, n := "", 0
+	hashes := map[int]string{}
+	var last Entry
 	for sc.Scan() {
 		line := sc.Bytes()
 		if len(line) == 0 {
@@ -135,10 +250,15 @@ func VerifyAudit(path string) error {
 		if e.Prev != prev {
 			return fmt.Errorf("kritrim: audit line %d: prev does not match", n+1)
 		}
-		if hashEntry(e) != e.Hash {
+		if !hmac.Equal([]byte(hashEntry(e, o.key)), []byte(e.Hash)) {
 			return fmt.Errorf("kritrim: audit line %d: hash does not match", n+1)
 		}
+		if e.Seq != n+1 {
+			return fmt.Errorf("kritrim: audit line %d: sequence is %d", n+1, e.Seq)
+		}
 		prev = e.Hash
+		hashes[e.Seq] = e.Hash
+		last = e
 		n++
 	}
 	if err := sc.Err(); err != nil {
@@ -146,6 +266,25 @@ func VerifyAudit(path string) error {
 	}
 	if n == 0 {
 		return errors.New("kritrim: audit log is empty")
+	}
+	if o.key == nil {
+		return nil
+	}
+	b, err := os.ReadFile(path + ".head")
+	if err != nil {
+		return fmt.Errorf("kritrim: audit head: %w", err)
+	}
+	var h auditHead
+	if err := json.Unmarshal(b, &h); err != nil {
+		return fmt.Errorf("kritrim: audit head: %w", err)
+	}
+	if !hmac.Equal([]byte(headMAC(o.key, h.Seq, h.Hash)), []byte(h.MAC)) {
+		return errors.New("kritrim: audit head signature does not match")
+	}
+	// The head may lag the log by one entry if the process stopped between
+	// the append and the head update; anything else is truncation.
+	if hashes[h.Seq] != h.Hash || (last.Seq != h.Seq && last.Seq != h.Seq+1) {
+		return fmt.Errorf("kritrim: audit log ends at %d but the head records %d (truncated or rewritten)", last.Seq, h.Seq)
 	}
 	return nil
 }
