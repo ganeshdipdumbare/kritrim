@@ -32,7 +32,7 @@ type localMachine struct{}
 func (m *localMachine) Exec(ctx context.Context, r ExecRequest) (ExecResult, error) {
 	res, err := localExec(ctx, execRequest{Command: r.Command, Dir: r.Dir, Env: r.Env,
 		Stdin: r.Stdin, Timeout: r.Timeout}, false)
-	return ExecResult{Stdout: res.Stdout, Stderr: res.Stderr, Exit: res.Exit}, err
+	return ExecResult(res), err
 }
 
 func (m *localMachine) ExecStream(ctx context.Context, r ExecRequest, emit func(stdout, stderr string)) (ExecResult, error) {

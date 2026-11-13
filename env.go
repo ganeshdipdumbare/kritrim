@@ -210,7 +210,7 @@ func (e *hostEnv) Exec(ctx context.Context, r execRequest) (execResult, error) {
 	if e.a.machine != nil {
 		res, err := e.a.machine.Exec(ctx, ExecRequest{Command: r.Command, Dir: r.Dir, Env: r.Env,
 			Stdin: r.Stdin, Timeout: r.Timeout})
-		return execResult{Stdout: res.Stdout, Stderr: res.Stderr, Exit: res.Exit}, err
+		return execResult(res), err
 	}
 	return localExec(ctx, r, true)
 }

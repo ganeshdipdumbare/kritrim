@@ -20,7 +20,8 @@ res, err := a.Run(ctx, "Hello")
 fmt.Println(res.Text)
 ```
 
-Requires **Go 1.27**. No third-party dependencies.
+Requires **Go 1.27** (build servers with 1.27.4 or later for the
+`net/http` fix GO-2026-6859). No third-party dependencies.
 
 ## Install
 

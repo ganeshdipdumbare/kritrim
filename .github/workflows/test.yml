@@ -12,6 +12,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.27"
+          check-latest: true
       - run: test -z "$(gofmt -l .)"
       - run: go vet ./...
       - run: go test -race -coverprofile=cover.out ./...
@@ -24,6 +25,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.27"
+          check-latest: true
       - name: govulncheck
         run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
       - name: staticcheck
