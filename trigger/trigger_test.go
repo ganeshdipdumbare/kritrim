@@ -156,3 +156,118 @@ func TestWebhookConcurrentDuplicates(t *testing.T) {
 		t.Fatalf("model calls %d, want 1", n)
 	}
 }
+
+func newHook(t *testing.T, cfg WebhookConfig) (http.Handler, *counterModel) {
+	t.Helper()
+	m := &counterModel{}
+	a, err := kritrim.New(kritrim.Config{Model: m})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { a.Close() })
+	cfg.Agent, cfg.Secret = a, "s3cret"
+	h, err := Webhook(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return h, m
+}
+
+func deliver(h http.Handler, body []byte, key, sig string, ts time.Time) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(body))
+	req.Header.Set(SignatureHeader, sig)
+	req.Header.Set(TimestampHeader, strconv.FormatInt(ts.Unix(), 10))
+	if key != "" {
+		req.Header.Set(IdempotencyHeader, key)
+	}
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+	return rr
+}
+
+func TestWebhookSignatureFieldsUnambiguous(t *testing.T) {
+	h, m := newHook(t, WebhookConfig{})
+	now := time.Now()
+	// The MAC for key "a" + body "1.2" must not verify key "a.1" + body "2".
+	sig := Sign("s3cret", now, "a", []byte("1.2"))
+	if rr := deliver(h, []byte("2"), "a.1", sig, now); rr.Code != http.StatusUnauthorized {
+		t.Fatalf("re-split fields accepted: %d", rr.Code)
+	}
+	if m.n.Load() != 0 {
+		t.Fatal("agent ran")
+	}
+}
+
+func TestWebhookKeyReuseConflicts(t *testing.T) {
+	h, m := newHook(t, WebhookConfig{})
+	now := time.Now()
+	a, b := []byte(`{"prompt":"a"}`), []byte(`{"prompt":"b"}`)
+	deliver(h, a, "k", Sign("s3cret", now, "k", a), now)
+	if rr := deliver(h, b, "k", Sign("s3cret", now, "k", b), now); rr.Code != http.StatusConflict {
+		t.Fatalf("reused key with new payload: %d", rr.Code)
+	}
+	if m.n.Load() != 1 {
+		t.Fatalf("runs %d", m.n.Load())
+	}
+}
+
+func TestWebhookKeyAndSignatureNamespaces(t *testing.T) {
+	h, m := newHook(t, WebhookConfig{})
+	now := time.Now()
+	a := []byte(`{"prompt":"a"}`)
+	sigA := Sign("s3cret", now, "", a)
+	deliver(h, a, "", sigA, now)
+	// A keyed delivery whose key equals that signature is a new delivery.
+	b := []byte(`{"prompt":"b"}`)
+	deliver(h, b, sigA, Sign("s3cret", now, sigA, b), now)
+	if m.n.Load() != 2 {
+		t.Fatalf("runs %d, want 2", m.n.Load())
+	}
+}
+
+func TestWebhookFullMemoryRefusesInsteadOfForgetting(t *testing.T) {
+	h, m := newHook(t, WebhookConfig{MaxEntries: 2})
+	now := time.Now()
+	body := []byte(`{"prompt":"x"}`)
+	for _, k := range []string{"k1", "k2"} {
+		deliver(h, body, k, Sign("s3cret", now, k, body), now)
+	}
+	if rr := deliver(h, body, "k3", Sign("s3cret", now, "k3", body), now); rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("full dedupe memory: %d, want 503", rr.Code)
+	}
+	// k1 is still remembered, so its replay does not run again.
+	before := m.n.Load()
+	deliver(h, body, "k1", Sign("s3cret", now, "k1", body), now)
+	if m.n.Load() != before {
+		t.Fatal("evicted delivery ran again")
+	}
+}
+
+func TestWebhookPanicReleasesDelivery(t *testing.T) {
+	var boom atomic.Bool
+	boom.Store(true)
+	h, m := newHook(t, WebhookConfig{Prompt: func(b []byte) string {
+		if boom.Load() {
+			panic("bad prompt mapper")
+		}
+		return "ok"
+	}})
+	now := time.Now()
+	body := []byte(`{"prompt":"x"}`)
+	sig := Sign("s3cret", now, "p", body)
+	func() {
+		defer func() { _ = recover() }()
+		deliver(h, body, "p", sig, now)
+	}()
+	boom.Store(false)
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() { done <- deliver(h, body, "p", sig, now) }()
+	select {
+	case rr := <-done:
+		if rr.Code != http.StatusOK || m.n.Load() != 1 {
+			t.Fatalf("retry after panic: %d runs %d", rr.Code, m.n.Load())
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("retry blocked on an abandoned delivery")
+	}
+}

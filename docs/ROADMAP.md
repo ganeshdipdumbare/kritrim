@@ -167,6 +167,16 @@ traces/metrics/logs export test.
 A2A push/bearer tests, webhook replay and concurrency tests, Docker argument
 test.
 
+Review follow-ups (same release): A2A per-principal ownership (`a2a.Tokens`,
+`Principal`) for tasks, contexts and push configs; push validation on every
+write path; unguardable custom transports refused; https→http redirects never
+carry secrets; length-prefixed webhook signatures, key/body fingerprints,
+namespaced dedupe ids, no eviction of replayable or in-flight deliveries,
+panic-safe completion; audit sinks verify before appending and recover after
+failures, empty keys rejected; pre-call token budgets (including repair and
+sealed calls, plus the run limit on the sealed host); run-scoped leases for
+sealed capability calls; JSON Schema constraints, combinators and local `$ref`.
+
 **Still open:** pluggable webhook dedupe store for multi-instance
 deployments; richer hooks (retry requests, tool swap, end turn).
 

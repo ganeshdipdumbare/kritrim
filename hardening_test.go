@@ -222,7 +222,7 @@ func TestSealedBridgedRiskyToolNeedsHostApproval(t *testing.T) {
 	if _, err := call("tool", map[string]any{"name": "refund", "args": map[string]any{"order": "A-1"}, "call": "c1"}); err == nil {
 		t.Fatal("tool ran outside a run")
 	}
-	b.cur = &activeRun{user: "alice", run: "r1", grants: map[string]grant{}}
+	b.cur = newActiveRun(context.Background(), "", "alice", "r1", nil)
 	// A compromised box calls the risky tool directly, claiming to be admin.
 	if _, err := call("tool", map[string]any{"name": "refund", "args": map[string]any{"order": "A-1"}, "call": "c1", "user": "admin"}); err == nil {
 		t.Fatal("risky bridged tool ran without approval")
@@ -255,7 +255,7 @@ func TestSealedBridgedRiskyToolNeedsHostApproval(t *testing.T) {
 func TestSealedBudgetCheckedBeforeCall(t *testing.T) {
 	m := &countModel{usage: Usage{In: 60, Out: 60}}
 	b := testBoxHost(t, Config{Model: m}, Sealed{MaxTokens: 100})
-	b.cur = &activeRun{grants: map[string]grant{}}
+	b.cur = newActiveRun(context.Background(), "", "", "r1", nil)
 	raw, _ := json.Marshal(map[string]any{"request": Request{}})
 	if _, err := b.model(context.Background(), raw); err != nil {
 		t.Fatal(err)
@@ -277,7 +277,7 @@ func TestSealedAuditEntriesAreMarked(t *testing.T) {
 	if _, err := b.audit(context.Background(), raw); err == nil {
 		t.Fatal("audit accepted outside a run")
 	}
-	b.cur = &activeRun{user: "alice", run: "r1", grants: map[string]grant{}}
+	b.cur = newActiveRun(context.Background(), "", "alice", "r1", nil)
 	if _, err := b.audit(context.Background(), raw); err != nil {
 		t.Fatal(err)
 	}
@@ -367,4 +367,189 @@ func FuzzPaths(f *testing.F) {
 			t.Fatalf("boxPath(%q, %q) = %q escapes", p, root, got)
 		}
 	})
+}
+
+func TestAuditSinkRefusesBadLogs(t *testing.T) {
+	ctx := context.Background()
+	key := []byte("0123456789abcdef0123456789abcdef")
+	other := []byte("ffffffffffffffffffffffffffffffff")
+	dir := t.TempDir()
+
+	// Empty and nil keys are errors, not "no signing".
+	for _, k := range [][]byte{nil, {}} {
+		if err := AuditFile(filepath.Join(dir, "e.log"), AuditKey(k)).Write(ctx, Entry{Kind: "x"}); err == nil {
+			t.Fatalf("key %v accepted", k)
+		}
+		if err := VerifyAudit(filepath.Join(dir, "e.log"), AuditKey(k)); err == nil {
+			t.Fatalf("verify with key %v accepted", k)
+		}
+	}
+
+	// An unkeyed log is not silently continued under a key.
+	plain := filepath.Join(dir, "plain.log")
+	_ = AuditFile(plain).Write(ctx, Entry{Kind: "x"})
+	if err := AuditFile(plain, AuditKey(key)).Write(ctx, Entry{Kind: "y"}); err == nil {
+		t.Fatal("appended keyed entries to an unkeyed log")
+	}
+
+	// A keyed log is not continued under another key.
+	keyed := filepath.Join(dir, "keyed.log")
+	for i := 0; i < 3; i++ {
+		_ = AuditFile(keyed, AuditKey(key)).Write(ctx, Entry{Kind: "x"})
+	}
+	if err := AuditFile(keyed, AuditKey(other)).Write(ctx, Entry{Kind: "y"}); err == nil {
+		t.Fatal("appended under a different key")
+	}
+
+	// A truncated keyed log is not re-blessed by the next append.
+	b, _ := os.ReadFile(keyed)
+	first := strings.SplitN(string(b), "\n", 2)[0] + "\n"
+	_ = os.WriteFile(keyed, []byte(first), 0o600)
+	if err := AuditFile(keyed, AuditKey(key)).Write(ctx, Entry{Kind: "y"}); err == nil {
+		t.Fatal("appended to a truncated log")
+	}
+	if err := VerifyAudit(keyed, AuditKey(key)); err == nil {
+		t.Fatal("truncated log verifies")
+	}
+}
+
+func TestAuditSinkRecoversAfterFailure(t *testing.T) {
+	ctx := context.Background()
+	key := []byte("0123456789abcdef0123456789abcdef")
+	dir := t.TempDir()
+	path := filepath.Join(dir, "a.log")
+	sink := AuditFile(path, AuditKey(key))
+	_ = sink.Write(ctx, Entry{Kind: "x"})
+	// Make the head unwritable so the next write fails after appending.
+	if err := os.Mkdir(path+".head.tmp", 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := sink.Write(ctx, Entry{Kind: "y"}); err == nil {
+		t.Fatal("expected head write failure")
+	}
+	_ = os.Remove(path + ".head.tmp")
+	if err := sink.Write(ctx, Entry{Kind: "z"}); err != nil {
+		t.Fatalf("sink did not recover: %v", err)
+	}
+	if err := VerifyAudit(path, AuditKey(key)); err != nil {
+		t.Fatalf("log after recovery: %v", err)
+	}
+}
+
+// ---- review follow-ups ----
+
+func TestBoxExecEnforcesAllowlist(t *testing.T) {
+	e := &boxEnv{}
+	if _, err := e.Exec(context.Background(), execRequest{Command: []string{"rm", "-rf", "x"}, Allow: []string{"echo"}}); err == nil {
+		t.Fatal("box ran a command outside the allowlist")
+	}
+	if _, err := e.Exec(context.Background(), execRequest{Command: []string{"echo", "x"}}); err == nil {
+		t.Fatal("box ran a command with no allowlist")
+	}
+}
+
+func TestSecretNotSentOverDowngrade(t *testing.T) {
+	// Redirect to the same host and port over plain http. If followed, the
+	// TLS server answers the plaintext request with 400.
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "http://"+r.Host+"/", http.StatusTemporaryRedirect)
+	}))
+	defer srv.Close()
+	a := &Agent{cfg: Config{Client: srv.Client(), Secrets: map[string]string{"KEY": "super-secret-value"}}, redactor: &redactor{}}
+	resp, err := (&hostEnv{a: a}).HTTP(context.Background(), httpRequest{URL: srv.URL, AllowHosts: []string{"127.0.0.1"},
+		Headers: map[string]string{"X-Api-Key": "secret://KEY"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Status != http.StatusTemporaryRedirect {
+		t.Fatalf("secret followed an https->http redirect on the same host (status %d)", resp.Status)
+	}
+}
+
+type rtFunc func(*http.Request) (*http.Response, error)
+
+func (f rtFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestWildcardEgressRefusesUnguardableClient(t *testing.T) {
+	var called atomic.Bool
+	client := &http.Client{Transport: rtFunc(func(r *http.Request) (*http.Response, error) {
+		called.Store(true)
+		return &http.Response{StatusCode: 200, Body: http.NoBody, Request: r}, nil
+	})}
+	a := &Agent{cfg: Config{Client: client}, redactor: &redactor{}}
+	_, err := (&hostEnv{a: a}).HTTP(context.Background(), httpRequest{URL: "https://1.1.1.1/", AllowHosts: []string{"*.example.com", "1.1.1.1"}})
+	if err == nil || called.Load() {
+		t.Fatal("request sent through a transport the dial guard cannot cover")
+	}
+	// Exact-only rules need no dial guard, so a custom transport is fine.
+	if _, err := (&hostEnv{a: a}).HTTP(context.Background(), httpRequest{URL: "https://1.1.1.1/", AllowHosts: []string{"1.1.1.1"}}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestBudgetCheckedBeforeModelCall(t *testing.T) {
+	m := &countModel{usage: Usage{In: 10, Out: 10}}
+	a, err := New(Config{Model: m, Limits: Limits{Tokens: 50}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	// The prompt alone is far above the budget: the provider is never called.
+	if _, err := a.Run(context.Background(), strings.Repeat("word ", 400)); err == nil {
+		t.Fatal("run over budget succeeded")
+	}
+	if n := m.calls.Load(); n != 0 {
+		t.Fatalf("provider called %d times for an input that cannot fit", n)
+	}
+	req := &Request{Messages: []Message{{Role: RoleUser, Content: "hi"}}, MaxTokens: 1000}
+	if err := fitBudget(req, 0, 100); err != nil || req.MaxTokens >= 100 {
+		t.Fatalf("output not capped to the remaining budget: %d %v", req.MaxTokens, err)
+	}
+	if err := fitBudget(req, 100, 100); err == nil {
+		t.Fatal("exhausted budget allowed a call")
+	}
+}
+
+func TestSealedHostEnforcesRunTokenLimit(t *testing.T) {
+	m := &countModel{usage: Usage{In: 40, Out: 40}}
+	b := testBoxHost(t, Config{Model: m, Limits: Limits{Tokens: 100}}, Sealed{}) // no Sealed.MaxTokens
+	b.cur = newActiveRun(context.Background(), "", "", "r1", nil)
+	raw, _ := json.Marshal(map[string]any{"request": Request{}})
+	for i := 0; i < 5; i++ {
+		_, _ = b.model(context.Background(), raw)
+	}
+	if n := m.calls.Load(); n != 2 {
+		t.Fatalf("provider called %d times, want 2 within a 100-token run limit", n)
+	}
+}
+
+func TestSealedCapabilitiesEndWithRun(t *testing.T) {
+	started := make(chan struct{})
+	var sawCancel atomic.Bool
+	slow := NewTool("slow", "slow", func(ctx context.Context, in struct{}) (string, error) {
+		close(started)
+		<-ctx.Done()
+		sawCancel.Store(true)
+		return "", ctx.Err()
+	})
+	b := testBoxHost(t, Config{Tools: []Tool{slow}}, Sealed{Bridged: []string{"slow"}})
+	r := newActiveRun(context.Background(), "", "alice", "r1", nil)
+	b.cur = r
+	raw, _ := json.Marshal(map[string]any{"name": "slow", "args": map[string]any{}, "call": "c1"})
+	done := make(chan struct{})
+	go func() { _, _ = b.tool(context.Background(), raw); close(done) }()
+	<-started
+	// End the run the way boxHost.run does.
+	b.cmu.Lock()
+	b.cur = nil
+	b.cmu.Unlock()
+	r.cancel()
+	r.leases.Wait()
+	<-done
+	if !sawCancel.Load() {
+		t.Fatal("in-flight capability call kept running after the run ended")
+	}
+	if _, err := b.tool(context.Background(), raw); err == nil {
+		t.Fatal("capability call accepted after the run ended")
+	}
 }

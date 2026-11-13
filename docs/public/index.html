@@ -322,7 +322,7 @@ a, _ := kritrim.New(kritrim.Config{Model: model, Tools: []kritrim.Tool{search}})
       <li><b>Results:</b> a string goes to the model as is; anything else is JSON.</li>
       <li><b>Errors:</b> a returned error becomes an error tool result, so the model can recover.</li>
       <li><b>Risky:</b> <code>kritrim.Risky(tool)</code> asks <code>Config.Approve</code> before the call.</li>
-      <li><b>Validated:</b> the model's arguments are checked against the schema (types, required fields, <code>enum</code>, no unknown fields) before the tool runs, for typed, raw and MCP tools alike.</li>
+      <li><b>Validated:</b> the model's arguments are checked against the schema before the tool runs, for typed, raw and MCP tools alike: types, required fields, <code>enum</code>/<code>const</code>, unknown fields, string length and <code>pattern</code>, numeric ranges, array sizes, <code>anyOf</code>/<code>oneOf</code>/<code>allOf</code>/<code>not</code> and local <code>$ref</code>. A schema keyword that cannot be enforced (a remote <code>$ref</code>, <code>if</code>/<code>then</code>, <code>patternProperties</code>…) makes the call fail instead of passing unchecked.</li>
     </ul>
     <h2>Parallel calls</h2>
     <p>One model step can ask for several tools. <code>ToolConcurrency</code> runs them together; risky tools always stay sequential so approvals keep their order.</p>
@@ -454,7 +454,7 @@ fmt.Println(trip.City, trip.Packing)</code></pre></div>
 	Audit:  kritrim.AuditFile(".agent/audit.jsonl", kritrim.AuditKey(auditKey)),
 	Secrets: map[string]string{"GITHUB_TOKEN": os.Getenv("GITHUB_TOKEN")},
 })</code></pre></div>
-    <p>Defaults: 20 steps, 100 tool calls and <code>kritrim.DefaultTokenLimit</code> (1,000,000) tokens per run. Set <code>Tokens: -1</code> to remove the token cap.</p>
+    <p>Defaults: 20 steps, 100 tool calls and <code>kritrim.DefaultTokenLimit</code> (1,000,000) tokens per run. Set <code>Tokens: -1</code> to remove the token cap. The token budget is checked <em>before</em> every model call, including the structured-output repair call: a call whose estimated input does not fit is refused, and the output limit is capped to what remains. In sealed mode the host enforces the run's <code>Limits.Tokens</code> as well as <code>Sealed.MaxTokens</code>.</p>
     <h2>Redaction and policy</h2>
     <div class="code" data-title="go"><pre><code class="language-go">deny, _ := guard.Deny(`(?i)ignore all previous`, "prompt injection")
 a, _ := kritrim.New(kritrim.Config{
@@ -545,7 +545,7 @@ a, err := kritrim.New(cfg)</code></pre></div>
         <tr><td>an audit entry</td><td>writes it marked <code>source: "box"</code> with the host's identity</td></tr>
       </tbody>
     </table></div>
-    <p>The box is treated as untrusted. User, roles, thread and run id come from the run the host started, never from the box, and the box can use host capabilities only while that run is in progress.</p>
+    <p>The box is treated as untrusted. User, roles, thread and run id come from the run the host started, never from the box. Every host capability call holds a lease on that run: when the run ends, in-flight calls are canceled and waited for, and new ones are refused.</p>
     <div class="note"><b>Local is not isolation</b><div><p><code>kritrim.Local()</code> exists for development and requires <code>AllowUnsafeLocal: true</code>. Use Docker or a cloud sandbox for a real boundary.</p></div></div>
   </section>
 
@@ -596,7 +596,8 @@ tool := c.AsTool("triage", "Routes a ticket")</code></pre></div>
       <li>Agent card, <code>message/send</code>, <code>message/stream</code>, <code>tasks/get</code>, <code>tasks/cancel</code>.</li>
       <li>Per-context agents with an LRU, text and data parts, and interrupt → <code>input-required</code> → resume.</li>
       <li>Push notifications with a token, and <code>tasks/pushNotificationConfig/{set,get,list,delete}</code>. Push URLs must be public http(s) (checked at set time and at dial time), redirects are not followed, and header values are sent as given: <code>secret://</code> is never resolved on the server.</li>
-      <li>Bearer auth (constant-time; an empty token is refused) and OAuth client credentials. Contexts are not an auth boundary; identify the caller at the transport.</li>
+      <li>Bearer auth (constant-time; an empty token is refused) and OAuth client credentials.</li>
+      <li>Per-caller isolation: with <code>a2a.Tokens(map[token]principal)</code> (or any <code>Auth</code> that implements <code>Principal</code>), each task, context, conversation and push config belongs to the caller that created it. Other callers get "task not found". With a single <code>Bearer</code> token, all callers share one principal.</li>
       <li>The client only follows redirects on the same allowed host, so its credentials stay where you sent them.</li>
     </ul>
   </section>
@@ -645,7 +646,7 @@ ts := time.Now()
 req.Header.Set(trigger.TimestampHeader, strconv.FormatInt(ts.Unix(), 10))
 req.Header.Set(trigger.IdempotencyHeader, "evt-123")
 req.Header.Set(trigger.SignatureHeader, trigger.Sign(secret, ts, "evt-123", body))</code></pre></div>
-    <p>The HMAC-SHA256 signature covers the timestamp, the idempotency key and the body. Requests outside <code>Tolerance</code> (default 5 minutes) are refused, so a captured request cannot be replayed later or under a new key. Each delivery runs once: duplicates, including concurrent ones, get the first result, and a delivery without a key is identified by its signature. Errors are logged, not returned. A schedule skips a tick when its previous run is still going.</p>
+    <p>The HMAC-SHA256 signature covers a versioned, length-prefixed encoding of the timestamp, the idempotency key and the body. Requests outside <code>Tolerance</code> (default 5 minutes) are refused, so a captured request cannot be replayed later or under a new key. Each delivery runs once: duplicates, including concurrent ones, get the first result, and a delivery without a key is identified by its signature. Reusing a key for a different body returns 409. Deliveries are remembered for <code>DedupeTTL</code>; when <code>MaxEntries</code> is full of unexpired ones the webhook answers 503 with <code>Retry-After</code> rather than forgetting any. Errors are logged, not returned. A schedule skips a tick when its previous run is still going.</p>
   </section>
 
   <section id="evals" class="page">
@@ -718,6 +719,7 @@ a, _ := kritrim.New(kritrim.Config{
 // later
 if err := kritrim.VerifyAudit(".agent/audit.jsonl", kritrim.AuditKey(key)); err != nil { ... }</code></pre></div>
     <p>With <code>AuditKey</code> (32+ random bytes from a KMS or secret store, not on the log's host) every entry is chained with HMAC-SHA256 and <code>audit.jsonl.head</code> holds a signed record of the last entry. Someone who can write the file but lacks the key cannot rewrite or truncate it without <code>VerifyAudit</code> failing. Without a key the plain SHA-256 chain only detects accidental corruption. Ship the head to external storage to detect a rollback of both files.</p>
+    <p>Before its first append, a sink verifies the existing log with its own key and refuses to extend a log that fails: one that was truncated, written unkeyed or with another key, or that lost its head. An empty key is an error, never "no signing". After a failed write the sink re-reads and re-verifies the file before the next one.</p>
     <h2>Traces, metrics and logs</h2>
     <div class="code" data-title="go"><pre><code class="language-go">a, _ := kritrim.New(kritrim.Config{
 	Model: model,

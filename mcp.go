@@ -183,11 +183,16 @@ func connectMCP(ctx context.Context, cfg MCPConfig, a *Agent) (*mcpClient, error
 			}
 		}
 		c.url = cfg.URL
-		c.http = egressClient(&http.Client{Timeout: cfg.Timeout}, hosts)
+		hc, err := egressClient(&http.Client{Timeout: cfg.Timeout}, hosts)
+		if err != nil {
+			return nil, err
+		}
+		c.http = hc
 		origin := strings.ToLower(u.Host)
 		c.http.CheckRedirect = func(req *http.Request, via []*http.Request) error {
-			// Headers may hold secrets: never follow a redirect off the host.
-			if len(via) >= 5 || strings.ToLower(req.URL.Host) != origin {
+			// Headers may hold secrets: never follow a redirect off the host
+			// or from https to http.
+			if len(via) >= 5 || strings.ToLower(req.URL.Host) != origin || downgrade(via[0].URL, req.URL) {
 				return http.ErrUseLastResponse
 			}
 			return nil

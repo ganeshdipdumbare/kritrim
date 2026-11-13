@@ -47,8 +47,15 @@ type auditOptions struct{ key []byte }
 // Use at least 32 random bytes kept outside the log's host (a KMS or secret
 // store). Without a key the chain is plain SHA-256: it catches accidental
 // corruption but anyone with write access can recompute it.
+//
+// A nil or short key is an error, never a silent fallback to an unkeyed log.
+// An existing log must have been written with the same key: AuditFile
+// verifies it before the first append and refuses to extend a log it cannot
+// verify.
 func AuditKey(key []byte) AuditOption {
-	return func(o *auditOptions) { o.key = append([]byte(nil), key...) }
+	// Never nil, so an empty key fails the length check instead of turning
+	// signing off.
+	return func(o *auditOptions) { o.key = append([]byte{}, key...) }
 }
 
 // AuditFile returns a sink that appends hash-chained JSON lines to path.
@@ -65,11 +72,12 @@ func AuditFile(path string, opts ...AuditOption) AuditSink {
 var errAuditKey = errors.New("kritrim: audit key must be at least 32 bytes")
 
 type fileAudit struct {
-	mu   sync.Mutex
-	path string
-	key  []byte
-	prev string
-	seq  int
+	mu     sync.Mutex
+	path   string
+	key    []byte
+	prev   string
+	seq    int
+	loaded bool // seq and prev reflect the file on disk
 }
 
 func (a *fileAudit) Write(ctx context.Context, e Entry) error {
@@ -86,15 +94,19 @@ func (a *fileAudit) Write(ctx context.Context, e Entry) error {
 		return err
 	}
 	defer f.Close()
-	if a.seq == 0 && a.prev == "" {
-		last, err := lastEntry(a.path)
-		if err != nil {
-			return fmt.Errorf("kritrim: audit log %s: %w", a.path, err)
-		}
-		if last != nil {
-			a.seq, a.prev = last.Seq, last.Hash
+	if !a.loaded {
+		if err := a.load(); err != nil {
+			return err
 		}
 	}
+	// Any failure below leaves the file in an unknown state: reload and
+	// re-verify it before the next append instead of trusting memory.
+	ok := false
+	defer func() {
+		if !ok {
+			a.loaded, a.seq, a.prev = false, 0, ""
+		}
+	}()
 	a.seq++
 	e.Seq = a.seq
 	if e.Time == 0 {
@@ -107,16 +119,40 @@ func (a *fileAudit) Write(ctx context.Context, e Entry) error {
 		return err
 	}
 	if _, err := f.Write(append(b, '\n')); err != nil {
-		a.seq--
 		return err
 	}
 	if err := f.Sync(); err != nil {
 		return err
 	}
-	a.prev = e.Hash
 	if a.key != nil {
-		return writeHead(a.path, a.key, e.Seq, e.Hash)
+		if err := writeHead(a.path, a.key, e.Seq, e.Hash); err != nil {
+			return err
+		}
 	}
+	a.prev = e.Hash
+	ok = true
+	return nil
+}
+
+// load verifies the existing log with this sink's key (or as a plain chain)
+// and resumes after its last entry. A log that fails verification, was
+// written with another key, or lost its head is never extended.
+func (a *fileAudit) load() error {
+	last, err := lastEntry(a.path)
+	if err != nil {
+		return fmt.Errorf("kritrim: audit log %s: %w", a.path, err)
+	}
+	if last != nil {
+		var opts []AuditOption
+		if a.key != nil {
+			opts = append(opts, AuditKey(a.key))
+		}
+		if err := VerifyAudit(a.path, opts...); err != nil {
+			return fmt.Errorf("kritrim: refusing to append to audit log %s: %w", a.path, err)
+		}
+		a.seq, a.prev = last.Seq, last.Hash
+	}
+	a.loaded = true
 	return nil
 }
 

@@ -82,6 +82,7 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 	hc := *cfg.Client
 	hc.CheckRedirect = func(req *http.Request, via []*http.Request) error {
 		if len(via) >= 5 || !strings.EqualFold(req.URL.Host, via[0].URL.Host) ||
+			(strings.EqualFold(via[0].URL.Scheme, "https") && !strings.EqualFold(req.URL.Scheme, "https")) ||
 			!allowed(req.URL.Hostname(), cfg.AllowHosts) {
 			return http.ErrUseLastResponse
 		}

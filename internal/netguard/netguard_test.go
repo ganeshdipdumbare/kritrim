@@ -2,6 +2,7 @@ package netguard
 
 import (
 	"context"
+	"net"
 	"net/netip"
 	"testing"
 )
@@ -34,9 +35,27 @@ func TestDialRefusesPrivate(t *testing.T) {
 			t.Fatalf("dialed %s", addr)
 		}
 	}
+	// A trusted private host must actually connect.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Skip("cannot listen:", err)
+	}
+	defer ln.Close()
+	go func() {
+		if c, err := ln.Accept(); err == nil {
+			c.Close()
+		}
+	}()
 	trusted := DialContext(func(h string) bool { return h == "127.0.0.1" })
-	if _, err := trusted(context.Background(), "tcp", "127.0.0.1:1"); err != nil && err.Error() == "" {
-		t.Fatal("unexpected")
+	c, err := trusted(context.Background(), "tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatalf("trusted private dial failed: %v", err)
+	}
+	c.Close()
+	// The same address is refused when not trusted.
+	if c, err := DialContext(nil)(context.Background(), "tcp", ln.Addr().String()); err == nil {
+		c.Close()
+		t.Fatal("untrusted private dial connected")
 	}
 }
 

@@ -220,6 +220,12 @@ func TestPushConfigRPC(t *testing.T) {
 	ts, _ := testServer(t, AllowAll())
 	c, _ := NewClient(ClientConfig{Endpoint: ts.URL})
 	ctx := context.Background()
+	if err := c.SetPush(ctx, "t1", PushConfig{URL: "https://example.com/hook"}); err == nil {
+		t.Fatal("push config accepted for a task that does not exist")
+	}
+	if _, err := c.Run(ctx, "x", TaskID("t1")); err != nil {
+		t.Fatal(err)
+	}
 	if err := c.SetPush(ctx, "t1", PushConfig{URL: "https://example.com/hook", Token: "tok"}); err != nil {
 		t.Fatal(err)
 	}
@@ -297,3 +303,85 @@ func TestPushPrivateURLRefused(t *testing.T) {
 		}
 	}
 }
+
+func TestPrincipalsAreIsolated(t *testing.T) {
+	var threads sync.Map
+	srv, err := NewServer(ServerConfig{Card: Card{Name: "x"}, PushAllowPrivate: true,
+		Auth: Tokens(map[string]string{"tok-a": "alice", "tok-b": "bob"}),
+		Agent: func(ctxID string) (*kritrim.Agent, error) {
+			return kritrim.New(kritrim.Config{Model: kritrim.Mock(kritrim.Turn{Text: "hi"}, kritrim.Turn{Text: "hi"}),
+				Hooks: kritrim.Hooks{BeforeRun: func(ctx context.Context, e *kritrim.RunEvent) error {
+					threads.Store(e.Thread, true)
+					return nil
+				}}})
+		}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	alice, _ := NewClient(ClientConfig{Endpoint: ts.URL, Headers: map[string]string{"Authorization": "Bearer tok-a"}})
+	bob, _ := NewClient(ClientConfig{Endpoint: ts.URL, Headers: map[string]string{"Authorization": "Bearer tok-b"}})
+	ctx := context.Background()
+	if _, err := alice.Run(ctx, "secret plan", TaskID("task-a"), ContextID("shared")); err != nil {
+		t.Fatal(err)
+	}
+	// Bob cannot read, continue, cancel or subscribe to Alice's task.
+	var out json.RawMessage
+	if err := bob.call(ctx, "tasks/get", map[string]any{"id": "task-a"}, &out); err == nil {
+		t.Fatal("bob read alice's task")
+	}
+	if err := bob.call(ctx, "tasks/cancel", map[string]any{"id": "task-a"}, &out); err == nil {
+		t.Fatal("bob canceled alice's task")
+	}
+	if _, err := bob.Run(ctx, "more", TaskID("task-a")); err == nil {
+		t.Fatal("bob continued alice's task")
+	}
+	if err := bob.SetPush(ctx, "task-a", PushConfig{URL: "https://evil.example/hook"}); err == nil {
+		t.Fatal("bob subscribed to alice's task")
+	}
+	// The same context id maps to separate conversations.
+	if _, err := bob.Run(ctx, "hello", TaskID("task-b"), ContextID("shared")); err != nil {
+		t.Fatal(err)
+	}
+	_, a := threads.Load("alice:shared")
+	_, b := threads.Load("bob:shared")
+	if !a || !b {
+		t.Fatal("contexts not namespaced per principal")
+	}
+	if err := alice.call(ctx, "tasks/get", map[string]any{"id": "task-a"}, &out); err != nil {
+		t.Fatalf("owner lost access: %v", err)
+	}
+	if Tokens(map[string]string{"tok": "alice"}).Check(httptest.NewRequest("POST", "/", nil)) == nil {
+		t.Fatal("missing token accepted")
+	}
+}
+
+func TestSendPushConfigValidated(t *testing.T) {
+	srv, _ := NewServer(ServerConfig{Card: Card{Name: "x"}, Auth: AllowAll(),
+		Agent: func(string) (*kritrim.Agent, error) {
+			return kritrim.New(kritrim.Config{Model: kritrim.Mock(kritrim.Turn{Text: "hi"})})
+		}})
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	c, _ := NewClient(ClientConfig{Endpoint: ts.URL, PushURL: "http://127.0.0.1/hook"})
+	if _, err := c.Run(context.Background(), "x", TaskID("t9")); err == nil {
+		t.Fatal("message/send stored a private push URL")
+	}
+	if cfg, _ := srv.cfg.Push.Get(context.Background(), "t9"); cfg != nil {
+		t.Fatal("invalid push config stored")
+	}
+}
+
+func TestCustomPushTransportRefused(t *testing.T) {
+	_, err := NewServer(ServerConfig{Card: Card{Name: "x"}, Auth: AllowAll(),
+		PushClient: &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) { return nil, nil })},
+		Agent:      func(string) (*kritrim.Agent, error) { return nil, nil }})
+	if err == nil {
+		t.Fatal("unguardable push transport accepted")
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }

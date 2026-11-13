@@ -115,14 +115,18 @@ func (e *hostEnv) HTTP(ctx context.Context, r httpRequest) (*httpResponse, error
 		}
 		req.Header.Set(k, resolved)
 	}
-	client := egressClient(e.a.cfg.httpClient(), r.AllowHosts)
+	client, err := egressClient(e.a.cfg.httpClient(), r.AllowHosts)
+	if err != nil {
+		return nil, err
+	}
 	origin := strings.ToLower(u.Host)
 	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
 		if len(via) >= 5 {
 			return errors.New("too many redirects")
 		}
-		if sensitive && strings.ToLower(req.URL.Host) != origin {
-			// Never carry a secret to another host; hand back the 3xx.
+		if sensitive && (strings.ToLower(req.URL.Host) != origin || downgrade(via[0].URL, req.URL)) {
+			// Never carry a secret to another host or over plaintext; hand
+			// back the 3xx.
 			return http.ErrUseLastResponse
 		}
 		exact, ok := hostAllowed(req.URL.Hostname(), r.AllowHosts)
@@ -157,16 +161,28 @@ func validMethod(m string) bool {
 // egressClient returns a client for one brokered request. When the rules
 // contain a wildcard, the dialer re-checks every connected IP so DNS
 // rebinding cannot reach a private address; exact hosts are trusted.
-func egressClient(base *http.Client, rules []string) *http.Client {
+//
+// A Config.Client whose Transport is not an *http.Transport cannot be
+// guarded; requests to wildcard rules are then refused rather than sent
+// unguarded.
+func egressClient(base *http.Client, rules []string) (*http.Client, error) {
 	if !hasWildcard(rules) {
 		cp := *base
-		return &cp
+		return &cp, nil
 	}
-	c, _ := netguard.Client(base, func(host string) bool {
+	c, ok := netguard.Client(base, func(host string) bool {
 		exact, ok := hostAllowed(host, rules)
 		return ok && exact
 	})
-	return c
+	if !ok {
+		return nil, errors.New("kritrim: wildcard egress needs Config.Client to use an *http.Transport so connections can be checked")
+	}
+	return c, nil
+}
+
+// downgrade reports a redirect from https to plain http.
+func downgrade(from, to *url.URL) bool {
+	return strings.EqualFold(from.Scheme, "https") && !strings.EqualFold(to.Scheme, "https")
 }
 
 func hasWildcard(rules []string) bool {

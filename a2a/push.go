@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/url"
 	"sync"
@@ -115,15 +116,29 @@ func (s *Server) notify(ctx context.Context, task *Task) {
 // pushHTTPClient never follows redirects (a redirect is an SSRF hop) and,
 // unless private targets are allowed, re-checks the connected IP at dial
 // time so DNS rebinding cannot reach an internal address.
-func pushHTTPClient(base *http.Client, allowPrivate bool) *http.Client {
+func pushHTTPClient(base *http.Client, allowPrivate bool) (*http.Client, error) {
 	c := *base
 	if !allowPrivate {
-		if guarded, ok := netguard.Client(base, nil); ok {
-			c = *guarded
+		guarded, ok := netguard.Client(base, nil)
+		if !ok {
+			return nil, errors.New("a2a: PushClient must use an *http.Transport so push connections can be checked (or set PushAllowPrivate)")
 		}
+		c = *guarded
 	}
 	c.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	return &c
+	return &c, nil
+}
+
+// validatePush is the one check every push-config write goes through.
+func (s *Server) validatePush(ctx context.Context, cfg PushConfig) error {
+	u, err := url.Parse(cfg.URL)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return errors.New("pushNotificationConfig.url must be an http(s) URL")
+	}
+	if !s.cfg.PushAllowPrivate && netguard.CheckHost(ctx, u.Hostname()) != nil {
+		return errors.New("pushNotificationConfig.url must be a public host")
+	}
+	return nil
 }
 
 func (s *Server) pushSet(w http.ResponseWriter, r *http.Request, id json.RawMessage, raw json.RawMessage) {
@@ -135,15 +150,13 @@ func (s *Server) pushSet(w http.ResponseWriter, r *http.Request, id json.RawMess
 		s.fail(w, id, -32602, "taskId and pushNotificationConfig.url are required")
 		return
 	}
-	if u, err := url.Parse(p.Config.URL); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-		s.fail(w, id, -32602, "pushNotificationConfig.url must be an http(s) URL")
+	if s.ownedTask(r, p.TaskID) == nil {
+		s.fail(w, id, -32001, "task not found")
 		return
 	}
-	if !s.cfg.PushAllowPrivate {
-		if u, _ := url.Parse(p.Config.URL); netguard.CheckHost(r.Context(), u.Hostname()) != nil {
-			s.fail(w, id, -32602, "pushNotificationConfig.url must be a public host")
-			return
-		}
+	if err := s.validatePush(r.Context(), p.Config); err != nil {
+		s.fail(w, id, -32602, err.Error())
+		return
 	}
 	if err := s.cfg.Push.Set(r.Context(), p.TaskID, p.Config); err != nil {
 		s.fail(w, id, -32603, err.Error())
@@ -158,6 +171,10 @@ func (s *Server) pushGet(w http.ResponseWriter, r *http.Request, id json.RawMess
 	}
 	if err := json.Unmarshal(raw, &p); err != nil || p.TaskID == "" {
 		s.fail(w, id, -32602, "taskId is required")
+		return
+	}
+	if s.ownedTask(r, p.TaskID) == nil {
+		s.fail(w, id, -32001, "task not found")
 		return
 	}
 	cfg, err := s.cfg.Push.Get(r.Context(), p.TaskID)
@@ -180,6 +197,10 @@ func (s *Server) pushList(w http.ResponseWriter, r *http.Request, id json.RawMes
 		s.fail(w, id, -32602, "taskId is required")
 		return
 	}
+	if s.ownedTask(r, p.TaskID) == nil {
+		s.fail(w, id, -32001, "task not found")
+		return
+	}
 	list, err := s.cfg.Push.List(r.Context(), p.TaskID)
 	if err != nil {
 		s.fail(w, id, -32603, err.Error())
@@ -197,6 +218,10 @@ func (s *Server) pushDelete(w http.ResponseWriter, r *http.Request, id json.RawM
 	}
 	if err := json.Unmarshal(raw, &p); err != nil || p.TaskID == "" {
 		s.fail(w, id, -32602, "taskId is required")
+		return
+	}
+	if s.ownedTask(r, p.TaskID) == nil {
+		s.fail(w, id, -32001, "task not found")
 		return
 	}
 	if err := s.cfg.Push.Delete(r.Context(), p.TaskID); err != nil {

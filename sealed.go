@@ -38,6 +38,17 @@ type activeRun struct {
 	thread, user, run string
 	roles             []string
 	grants            map[string]grant // call id -> approved risky call
+	used              int              // tokens served to this run
+
+	ctx    context.Context // canceled when the run ends
+	cancel context.CancelFunc
+	leases sync.WaitGroup // capability calls in flight
+}
+
+func newActiveRun(parent context.Context, thread, user, run string, roles []string) *activeRun {
+	r := &activeRun{thread: thread, user: user, run: run, roles: roles, grants: map[string]grant{}}
+	r.ctx, r.cancel = context.WithCancel(parent)
+	return r
 }
 
 // grant is one approved call of a risky tool, bound to its exact arguments.
@@ -210,19 +221,22 @@ type bridgedTool struct {
 	Risky bool `json:"risky,omitempty"`
 }
 
-// current returns the run in progress or an error when there is none; the
-// box may only use host capabilities during a run the host started.
-func (b *boxHost) current() (*activeRun, error) {
+// acquire leases the run in progress for one capability call. The returned
+// context ends when either the RPC or the run ends, and the run does not
+// finish until every lease is released, so no host capability outlives it.
+func (b *boxHost) acquire(ctx context.Context) (context.Context, *activeRun, func(), error) {
 	b.cmu.Lock()
-	defer b.cmu.Unlock()
-	if b.cur == nil {
-		return nil, errors.New("kritrim: no run in progress")
+	r := b.cur
+	if r == nil {
+		b.cmu.Unlock()
+		return nil, nil, nil, errors.New("kritrim: no run in progress")
 	}
-	return b.cur, nil
-}
-
-func (b *boxHost) runCtx(ctx context.Context, r *activeRun) context.Context {
-	return withIdentity(ctx, r.thread, r.user, r.run, r.roles)
+	r.leases.Add(1)
+	b.cmu.Unlock()
+	cctx, cancel := context.WithCancel(ctx)
+	stop := context.AfterFunc(r.ctx, cancel)
+	cctx = withIdentity(cctx, r.thread, r.user, r.run, r.roles)
+	return cctx, r, func() { stop(); cancel(); r.leases.Done() }, nil
 }
 
 func (b *boxHost) register() {
@@ -256,22 +270,22 @@ func (b *boxHost) model(ctx context.Context, raw json.RawMessage) (any, error) {
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return nil, err
 	}
-	if _, err := b.current(); err != nil {
+	ctx, r, release, err := b.acquire(ctx)
+	if err != nil {
 		return nil, err
 	}
+	defer release()
 	p.Request.Model = b.a.Model()
-	// One model call at a time, and the budget is checked before the call,
-	// so a box cannot spend past it by calling again or in parallel.
+	// One model call at a time, and both budgets (the sealed agent's total
+	// and this run's Limits.Tokens) are checked before the call against the
+	// estimated input, so a box cannot spend past them.
 	b.umu.Lock()
 	defer b.umu.Unlock()
-	if b.cfg.MaxTokens > 0 {
-		left := b.cfg.MaxTokens - b.used
-		if left <= 0 {
-			return nil, fmt.Errorf("kritrim: sealed token budget %d exceeded (%d used)", b.cfg.MaxTokens, b.used)
-		}
-		if p.Request.MaxTokens <= 0 || p.Request.MaxTokens > left {
-			p.Request.MaxTokens = left
-		}
+	if err := fitBudget(&p.Request, b.used, b.cfg.MaxTokens); err != nil {
+		return nil, fmt.Errorf("kritrim: sealed %w", err)
+	}
+	if err := fitBudget(&p.Request, r.used, b.a.cfg.Limits.Tokens); err != nil {
+		return nil, err
 	}
 	resp, err := b.a.model.Stream(ctx, p.Request, func(d Delta) {
 		b.p.notify("model.delta", map[string]any{"call": p.Call, "text": d.Text, "reasoning": d.Reasoning})
@@ -280,6 +294,7 @@ func (b *boxHost) model(ctx context.Context, raw json.RawMessage) (any, error) {
 		return nil, err
 	}
 	b.used += resp.Usage.Total()
+	r.used += resp.Usage.Total()
 	return resp, nil
 }
 
@@ -292,9 +307,11 @@ func (b *boxHost) http(ctx context.Context, raw json.RawMessage) (any, error) {
 	for _, hosts := range b.cfg.Secrets {
 		allow = append(allow, hosts...)
 	}
-	if _, err := b.current(); err != nil {
+	ctx, _, release, err := b.acquire(ctx)
+	if err != nil {
 		return nil, err
 	}
+	defer release()
 	r.AllowHosts = allow
 	r.sensitive = false
 	if err := b.substitute(&r); err != nil {
@@ -392,10 +409,11 @@ func (b *boxHost) tool(ctx context.Context, raw json.RawMessage) (any, error) {
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return nil, err
 	}
-	r, err := b.current()
+	ctx, r, release, err := b.acquire(ctx)
 	if err != nil {
 		return nil, err
 	}
+	defer release()
 	if !contains(b.cfg.Bridged, p.Name) {
 		return nil, fmt.Errorf("kritrim: tool %q is not bridged into the box", p.Name)
 	}
@@ -403,7 +421,6 @@ func (b *boxHost) tool(ctx context.Context, raw json.RawMessage) (any, error) {
 	if !ok {
 		return nil, fmt.Errorf("kritrim: host tool %q not found", p.Name)
 	}
-	ctx = b.runCtx(ctx, r)
 	o := runOptions{thread: r.thread, user: r.user}
 	if t.risky() {
 		// The host enforces approval itself: a risky bridged tool runs only
@@ -448,11 +465,11 @@ func (b *boxHost) approve(ctx context.Context, raw json.RawMessage) (any, error)
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return nil, err
 	}
-	r, err := b.current()
+	ctx, r, release, err := b.acquire(ctx)
 	if err != nil {
 		return nil, err
 	}
-	ctx = b.runCtx(ctx, r)
+	defer release()
 	o := runOptions{thread: r.thread, user: r.user}
 	if _, ok := b.a.tool(p.Req.Tool); !ok {
 		return Reject("unknown tool"), nil
@@ -498,10 +515,11 @@ func (b *boxHost) audit(ctx context.Context, raw json.RawMessage) (any, error) {
 	if err := json.Unmarshal(raw, &e); err != nil {
 		return nil, err
 	}
-	r, err := b.current()
+	ctx, r, release, err := b.acquire(ctx)
 	if err != nil {
 		return nil, err
 	}
+	defer release()
 	if b.a.cfg.Audit != nil {
 		// Entries from the box are marked and carry the host's identity;
 		// seq, time and hashes are assigned by the sink.
@@ -529,17 +547,21 @@ func (b *boxHost) run(ctx context.Context, prompt string, emit func(Event), o ru
 	b.emu.Lock()
 	b.emit = emit
 	b.emu.Unlock()
-	cur := &activeRun{thread: o.thread, user: o.user, run: o.runID, roles: o.roles, grants: map[string]grant{}}
+	cur := newActiveRun(context.WithoutCancel(ctx), o.thread, o.user, o.runID, o.roles)
 	b.cmu.Lock()
 	b.cur = cur
 	b.cmu.Unlock()
 	defer func() {
-		b.emu.Lock()
-		b.emit = nil
-		b.emu.Unlock()
+		// End the run: refuse new leases, cancel in-flight calls and wait
+		// for them, so nothing the box queued runs afterwards.
 		b.cmu.Lock()
 		b.cur = nil
 		b.cmu.Unlock()
+		cur.cancel()
+		cur.leases.Wait()
+		b.emu.Lock()
+		b.emit = nil
+		b.emu.Unlock()
 	}()
 
 	var msgs []Message

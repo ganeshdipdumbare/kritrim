@@ -133,7 +133,9 @@ a, _ := kritrim.New(kritrim.Config{
 ```
 
 The JSON Schema comes from the Go type (`json`, `desc`, `enum`), and the
-model's arguments are validated against it before the tool runs. Mark a tool `Risky` to require approval. `ToolConcurrency > 1` runs the
+model's arguments are validated against it before the tool runs (types,
+required, enum/const, lengths, pattern, ranges, combinators and local
+`$ref`; a keyword that cannot be enforced fails the call). Mark a tool `Risky` to require approval. `ToolConcurrency > 1` runs the
 model's parallel tool calls concurrently (risky tools stay sequential).
 `Agent.CallTool` runs one directly. Built-in tools include time, HTTP, web
 search, shell, files, line-numbered read, write, edit, sleep, stop, notebook
@@ -269,10 +271,12 @@ kritrim.StateFrom(ctx).Set("seen", true)
 - **Approvals.** Risky tools need `Config.Approve`; without it they are refused.
 - **Limits.** Steps (20), tool calls (100) and tokens (1,000,000) per run by
   default, per-tool timeout, panic recovery. `Limits.Tokens: -1` removes the
-  token cap.
+  token cap. The budget is checked before every model call against the
+  estimated input, and output is capped to what remains.
 - **Tamper-evident audit.** Hash-chained JSON lines; `VerifyAudit` checks them.
   With `AuditKey(key)` the chain is HMAC-SHA256 and a signed head file detects
-  truncation, so rewriting the log needs the key.
+  truncation, so rewriting the log needs the key. A sink verifies an existing
+  log before appending and refuses one it cannot verify.
 - **PII hooks.** `guard.PII("email", "credit_card")` redacts prompts, replies
   and tool results.
 - **Tracing.** `trace.JSON(w)` writes one line per run/model/tool event;
@@ -341,8 +345,10 @@ disposable and durable approvals survive a box restart.
 The host treats the box as untrusted: identity (user, roles, thread, run)
 comes from the run the host started, a risky bridged tool runs only for a
 call the host approved (once, with exactly the approved arguments), the token
-budget is checked before every model call, secret placeholders are random,
-and audit entries from the box are marked `source: "box"`.
+budget (and the run's `Limits.Tokens`) is checked before every model call,
+host calls are leased to the run and canceled when it ends, secret
+placeholders are random, and audit entries from the box are marked
+`source: "box"`.
 
 For containers, build the box with `go run ./cmd/kritrim box build -o box .`
 (default `linux/amd64`). `Local` needs no binary and requires
@@ -425,6 +431,8 @@ server POSTs task updates to that webhook, with an optional notification token.
 Push URLs must be public http(s), redirects are not followed, and push header
 values are sent as given (`secret://` is never resolved on the server).
 `Bearer` compares in constant time and refuses an empty token.
+`a2a.Tokens(map[token]principal)` gives each caller its own tasks, contexts
+and push configs; other callers get "task not found".
 
 ## Evals
 
@@ -489,8 +497,9 @@ http.Handle("/hook", hook)
 Webhooks require `X-Kritrim-Timestamp` and an HMAC-SHA256
 `X-Kritrim-Signature` over timestamp, `Idempotency-Key` and body
 (`trigger.Sign` builds it). Stale requests (default 5 minutes) are refused,
-each delivery runs once even when duplicates arrive concurrently, and run
-errors are logged rather than returned.
+each delivery runs once even when duplicates arrive concurrently, a key reused
+for a different body gets 409, a full dedupe memory answers 503 instead of
+forgetting deliveries, and run errors are logged rather than returned.
 
 ## Memory
 
