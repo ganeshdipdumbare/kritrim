@@ -322,6 +322,7 @@ a, _ := kritrim.New(kritrim.Config{Model: model, Tools: []kritrim.Tool{search}})
       <li><b>Results:</b> a string goes to the model as is; anything else is JSON.</li>
       <li><b>Errors:</b> a returned error becomes an error tool result, so the model can recover.</li>
       <li><b>Risky:</b> <code>kritrim.Risky(tool)</code> asks <code>Config.Approve</code> before the call.</li>
+      <li><b>Validated:</b> the model's arguments are checked against the schema (types, required fields, <code>enum</code>, no unknown fields) before the tool runs, for typed, raw and MCP tools alike.</li>
     </ul>
     <h2>Parallel calls</h2>
     <p>One model step can ask for several tools. <code>ToolConcurrency</code> runs them together; risky tools always stay sequential so approvals keep their order.</p>
@@ -439,25 +440,29 @@ fmt.Println(trip.City, trip.Packing)</code></pre></div>
     <p class="lede">Enabling a built-in capability is the grant. There is no second policy file to drift from the code.</p>
     <div class="cards">
       <div class="card"><h3>Default deny</h3><p><code>HTTP</code> and <code>Shell</code> refuse to be constructed without an allowlist. <code>Files</code> is read-only unless <code>Write: true</code>.</p></div>
-      <div class="card"><h3>SSRF and redirects</h3><p>Exact allowlisted hosts may be private; wildcards resolve and must be public. Every redirect is re-validated.</p></div>
-      <div class="card"><h3>Secrets</h3><p><code>secret://NAME</code> resolves at use and is redacted from output, events and audit. Sealed boxes get placeholders only.</p></div>
-      <div class="card"><h3>Audit</h3><p>One hash-chained JSON line per model, tool and approval. <code>VerifyAudit</code> checks the chain.</p></div>
+      <div class="card"><h3>SSRF and rebinding</h3><p>Exact allowlisted hosts may be private; wildcard hosts must be public, checked at dial time on the IP actually connected to, so DNS rebinding cannot reach an internal address. Every redirect is re-validated.</p></div>
+      <div class="card"><h3>Secrets</h3><p><code>secret://NAME</code> resolves at use and is redacted from output, events and audit. A request that carries a secret never follows a redirect to another host. Sealed boxes get random placeholders only.</p></div>
+      <div class="card"><h3>No inherited credentials</h3><p>Shell commands, MCP stdio servers and local boxes start with a minimal environment (<code>PATH</code>, <code>HOME</code>, locale, temp dir). Your API keys never reach them; pass extras with <code>ShellConfig.Env</code> or <code>MCPConfig.Env</code>.</p></div>
+      <div class="card"><h3>Symlink-safe files</h3><p>File tools open their root with <code>os.Root</code>: a symlink inside the root cannot read or write outside it.</p></div>
+      <div class="card"><h3>Validated arguments</h3><p>Tool arguments are checked against the tool schema before the call, so a model cannot pass types, values or fields the tool did not declare.</p></div>
+      <div class="card"><h3>Audit</h3><p>One hash-chained JSON line per model, tool and approval. With <code>AuditKey</code> the chain is HMAC-signed and a signed head detects truncation.</p></div>
     </div>
     <h2>Limits</h2>
     <div class="code" data-title="go"><pre><code class="language-go">a, _ := kritrim.New(kritrim.Config{
 	Model:  model,
 	Limits: kritrim.Limits{Steps: 20, ToolCalls: 50, Tokens: 200_000},
-	Audit:  kritrim.AuditFile(".agent/audit.jsonl"),
+	Audit:  kritrim.AuditFile(".agent/audit.jsonl", kritrim.AuditKey(auditKey)),
 	Secrets: map[string]string{"GITHUB_TOKEN": os.Getenv("GITHUB_TOKEN")},
 })</code></pre></div>
+    <p>Defaults: 20 steps, 100 tool calls and <code>kritrim.DefaultTokenLimit</code> (1,000,000) tokens per run. Set <code>Tokens: -1</code> to remove the token cap.</p>
     <h2>Redaction and policy</h2>
-    <div class="code" data-title="go"><pre><code class="language-go">a, _ := kritrim.New(kritrim.Config{
+    <div class="code" data-title="go"><pre><code class="language-go">deny, _ := guard.Deny(`(?i)ignore all previous`, "prompt injection")
+a, _ := kritrim.New(kritrim.Config{
 	Model: model,
-	Hooks: guard.PII("email", "credit_card"),
-})
-// or block a prompt outright:
-hooks, _ := guard.Deny(`(?i)ignore all previous`, "prompt injection")
-a, _ = kritrim.New(kritrim.Config{Model: model, Hooks: hooks})</code></pre></div>
+	// Guards first, so tracing sees redacted values.
+	Hooks: kritrim.Chain(deny, guard.PII("email", "credit_card"), trace.OTel(otelCfg)),
+})</code></pre></div>
+    <p><code>kritrim.Chain</code> combines any number of hook sets. They run in the order given; a Before hook that errors or denies stops the chain.</p>
     <div class="note warn"><b>Trust boundary</b><div><p>The broker governs built-in tools. Your own Go tools are code you compiled into the binary. Put untrusted work in a sandbox.</p></div></div>
   </section>
 
@@ -472,6 +477,18 @@ a, _ = kritrim.New(kritrim.Config{Model: model, Hooks: hooks})</code></pre></div
 	},
 	Sandbox: kritrim.Docker(kritrim.DockerConfig{Image: "golang:1.27"}),
 })</code></pre></div>
+    <h2>Hardened containers</h2>
+    <p>Containers kritrim creates drop every Linux capability, set <code>no-new-privileges</code>, have no network, and are capped at 2 GB of memory, 2 CPUs and 512 processes. Tighten or relax per sandbox:</p>
+    <div class="code" data-title="go"><pre><code class="language-go">kritrim.Docker(kritrim.DockerConfig{
+	Image:     "golang:1.27",
+	User:      "1000:1000", // recommended: not root
+	ReadOnly:  true,        // read-only root, writable /tmp
+	Memory:    "1g",        // "none" removes the cap
+	CPUs:      "1",
+	PidsLimit: 256,         // -1 removes the cap
+	CapAdd:    nil,         // re-add capabilities only if needed
+})</code></pre></div>
+    <p>An attached container (<code>Container:</code>) keeps the settings it was started with.</p>
     <h2>Attach or stream</h2>
     <div class="code" data-title="go"><pre><code class="language-go">// Attach to a container that already exists; Close does not remove it.
 box := kritrim.Docker(kritrim.DockerConfig{Container: "agent-workspace"})
@@ -520,13 +537,15 @@ a, err := kritrim.New(cfg)</code></pre></div>
     <div class="table"><table>
       <thead><tr><th>The box needs</th><th>The host does</th></tr></thead>
       <tbody>
-        <tr><td>a model call</td><td>injects the key, calls the provider, streams tokens back, counts usage against the budget</td></tr>
-        <tr><td>a <code>secret://</code></td><td>resolves it only for allowed hosts and redacts responses</td></tr>
-        <tr><td>a bridged tool</td><td>runs it on the host with approval and audit</td></tr>
+        <tr><td>a model call</td><td>checks the token budget <em>before</em> the call, injects the key, calls the provider one call at a time, streams tokens back</td></tr>
+        <tr><td>a <code>secret://</code></td><td>returns a random placeholder, substitutes it only for allowed hosts, never follows a cross-host redirect with it, and redacts responses</td></tr>
+        <tr><td>a bridged tool</td><td>runs it on the host; a risky one runs only for a call the host approved, once, with exactly the approved arguments</td></tr>
         <tr><td>egress</td><td>allowlist and SSRF checks on the host</td></tr>
-        <tr><td>an approval</td><td>asks <code>Config.Approve</code> on the host and persists the pause</td></tr>
+        <tr><td>an approval</td><td>asks <code>Config.Approve</code> on the host with a host-written message and persists the pause</td></tr>
+        <tr><td>an audit entry</td><td>writes it marked <code>source: "box"</code> with the host's identity</td></tr>
       </tbody>
     </table></div>
+    <p>The box is treated as untrusted. User, roles, thread and run id come from the run the host started, never from the box, and the box can use host capabilities only while that run is in progress.</p>
     <div class="note"><b>Local is not isolation</b><div><p><code>kritrim.Local()</code> exists for development and requires <code>AllowUnsafeLocal: true</code>. Use Docker or a cloud sandbox for a real boundary.</p></div></div>
   </section>
 
@@ -544,6 +563,7 @@ a, err := kritrim.New(cfg)</code></pre></div>
     <ul>
       <li>Tools are named <code>server__tool</code>.</li>
       <li>Each server has a timeout, an HTTP host allowlist and an optional <code>Risky</code> flag.</li>
+      <li>stdio servers do not inherit your environment; pass what they need in <code>Env</code>. HTTP servers never get a redirect off their host.</li>
       <li>In sealed mode the host connects and bridges the tools into the box automatically.</li>
     </ul>
   </section>
@@ -575,8 +595,9 @@ tool := c.AsTool("triage", "Routes a ticket")</code></pre></div>
     <ul>
       <li>Agent card, <code>message/send</code>, <code>message/stream</code>, <code>tasks/get</code>, <code>tasks/cancel</code>.</li>
       <li>Per-context agents with an LRU, text and data parts, and interrupt → <code>input-required</code> → resume.</li>
-      <li>Push notifications with a token, SSRF guard, and <code>tasks/pushNotificationConfig/{set,get,list,delete}</code>.</li>
-      <li>Bearer auth and OAuth client credentials. Contexts are not an auth boundary; identify the caller at the transport.</li>
+      <li>Push notifications with a token, and <code>tasks/pushNotificationConfig/{set,get,list,delete}</code>. Push URLs must be public http(s) (checked at set time and at dial time), redirects are not followed, and header values are sent as given: <code>secret://</code> is never resolved on the server.</li>
+      <li>Bearer auth (constant-time; an empty token is refused) and OAuth client credentials. Contexts are not an auth boundary; identify the caller at the transport.</li>
+      <li>The client only follows redirects on the same allowed host, so its credentials stay where you sent them.</li>
     </ul>
   </section>
 
@@ -617,8 +638,14 @@ hook, _ := trigger.Webhook(trigger.WebhookConfig{
 	Agent:  agent,
 	Secret: "secret://HOOK_SECRET",
 })
-http.Handle("/hook", hook)</code></pre></div>
-    <p>Webhooks verify <code>X-Kritrim-Signature</code> (HMAC-SHA256) and deduplicate <code>Idempotency-Key</code> retries. A schedule skips a tick when its previous run is still going.</p>
+http.Handle("/hook", hook)
+
+// Sender side:
+ts := time.Now()
+req.Header.Set(trigger.TimestampHeader, strconv.FormatInt(ts.Unix(), 10))
+req.Header.Set(trigger.IdempotencyHeader, "evt-123")
+req.Header.Set(trigger.SignatureHeader, trigger.Sign(secret, ts, "evt-123", body))</code></pre></div>
+    <p>The HMAC-SHA256 signature covers the timestamp, the idempotency key and the body. Requests outside <code>Tolerance</code> (default 5 minutes) are refused, so a captured request cannot be replayed later or under a new key. Each delivery runs once: duplicates, including concurrent ones, get the first result, and a delivery without a key is identified by its signature. Errors are logged, not returned. A schedule skips a tick when its previous run is still going.</p>
   </section>
 
   <section id="evals" class="page">
@@ -686,10 +713,11 @@ a, _ := kritrim.New(kritrim.Config{
     <h2>Audit</h2>
     <div class="code" data-title="go"><pre><code class="language-go">a, _ := kritrim.New(kritrim.Config{
 	Model: model,
-	Audit: kritrim.AuditFile(".agent/audit.jsonl"),
+	Audit: kritrim.AuditFile(".agent/audit.jsonl", kritrim.AuditKey(key)),
 })
 // later
-if err := kritrim.VerifyAudit(".agent/audit.jsonl"); err != nil { ... }</code></pre></div>
+if err := kritrim.VerifyAudit(".agent/audit.jsonl", kritrim.AuditKey(key)); err != nil { ... }</code></pre></div>
+    <p>With <code>AuditKey</code> (32+ random bytes from a KMS or secret store, not on the log's host) every entry is chained with HMAC-SHA256 and <code>audit.jsonl.head</code> holds a signed record of the last entry. Someone who can write the file but lacks the key cannot rewrite or truncate it without <code>VerifyAudit</code> failing. Without a key the plain SHA-256 chain only detects accidental corruption. Ship the head to external storage to detect a rollback of both files.</p>
     <h2>Traces, metrics and logs</h2>
     <div class="code" data-title="go"><pre><code class="language-go">a, _ := kritrim.New(kritrim.Config{
 	Model: model,
@@ -727,6 +755,8 @@ if err := kritrim.VerifyAudit(".agent/audit.jsonl"); err != nil { ... }</code></
         <tr><td><code>kritrim.NewTool / NewRawTool</code></td><td>typed and dynamic tools</td></tr>
         <tr><td><code>kritrim.Thread / Output / Decisions / User / Roles / Images</code></td><td>per-run options</td></tr>
         <tr><td><code>kritrim.RunID / Idempotency / OnEvent</code></td><td>control and observation</td></tr>
+        <tr><td><code>kritrim.Chain(...Hooks)</code></td><td>combine guards, memory, plugins and tracing</td></tr>
+        <tr><td><code>kritrim.AuditFile / AuditKey / VerifyAudit</code></td><td>signed, tamper-evident audit log</td></tr>
       </tbody>
     </table></div>
     <h2>Config</h2>
@@ -740,7 +770,7 @@ if err := kritrim.VerifyAudit(".agent/audit.jsonl"); err != nil { ... }</code></
 	Session      SessionStore
 	Approve      func(context.Context, Approval) (Decision, error)
 	Audit        AuditSink
-	Hooks        Hooks
+	Hooks        Hooks // kritrim.Chain(...) to combine
 	Retry        *Retry
 	Context      *ContextConfig
 	Sandbox      Sandbox
@@ -784,6 +814,7 @@ if err := kritrim.VerifyAudit(".agent/audit.jsonl"); err != nil { ... }</code></
         <tr><td>Docker/Local/SSH sandboxes, attach, streamed exec, sealed mode</td><td>shipped</td></tr>
         <tr><td>MCP, A2A (push, OAuth, SQL tasks), multi-agent graph/swarm</td><td>shipped</td></tr>
         <tr><td>Evals, triggers, memory, skills, plugins, PII, trace/OTel</td><td>shipped</td></tr>
+        <tr><td>Hardening: host-enforced sealed approvals, dial-time SSRF, os.Root files, signed audit, replay-safe webhooks, hardened Docker, hook chaining</td><td>shipped</td></tr>
         <tr><td>Cloud sandbox adapters (E2B, microsandbox, Firecracker, Tensorlake)</td><td>planned</td></tr>
         <tr><td>A2A file parts, Cedar authorization, python tool, voice</td><td>planned</td></tr>
         <tr><td>Evals CLI run/generate, remote traces</td><td>planned</td></tr>

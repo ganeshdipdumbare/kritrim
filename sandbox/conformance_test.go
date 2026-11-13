@@ -8,7 +8,7 @@ import (
 	"github.com/ganeshdipdumbare/kritrim/sandbox/sandboxtest"
 )
 
-func TestLocalConformance(t *testing.T) { sandboxtest.Run(t, kritrim.Local()) }
+func TestLocalConformance(t *testing.T) { sandboxtest.RunDir(t, kritrim.Local(), t.TempDir()) }
 
 func TestDockerConformance(t *testing.T) {
 	if _, err := exec.LookPath("docker"); err != nil {

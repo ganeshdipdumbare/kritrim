@@ -461,7 +461,10 @@ func (a *Agent) executeCall(ctx context.Context, o runOptions, call ToolCall, em
 		}
 	}
 
-	tctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	if err := tool.checkArgs(call.Args); err != nil {
+		return ToolResult{CallID: call.ID, Name: tool.Name, Content: "error: " + err.Error(), IsError: true}, nil
+	}
+	tctx, cancel := context.WithTimeout(context.WithValue(ctx, keyCall, call.ID), 2*time.Minute)
 	defer cancel()
 	content, err := runTool(tctx, tool, call.Args)
 	res := ToolResult{CallID: call.ID, Name: tool.Name, Content: content}

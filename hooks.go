@@ -190,3 +190,70 @@ func trimContext(ctx context.Context, msgs []Message, cfg *ContextConfig) ([]Mes
 	}
 	return kept, nil
 }
+
+// Chain combines hooks into one value for Config.Hooks, e.g.
+//
+//	Hooks: kritrim.Chain(guard.PII("email"), memory.Inject(store, 5), trace.OTel(cfg))
+//
+// Every hook runs in the order given, for Before and After alike, and each
+// sees the changes made by the ones before it. A Before hook that returns
+// an error (or a BeforeTool hook that sets Deny) stops the chain. List
+// guards that redact or deny first, so observers see the guarded values.
+func Chain(hooks ...Hooks) Hooks {
+	var out Hooks
+	for _, h := range hooks {
+		if h.BeforeRun != nil {
+			out.BeforeRun = chainBefore(out.BeforeRun, h.BeforeRun)
+		}
+		if h.AfterRun != nil {
+			out.AfterRun = chainAfter(out.AfterRun, h.AfterRun)
+		}
+		if h.BeforeModel != nil {
+			out.BeforeModel = chainBefore(out.BeforeModel, h.BeforeModel)
+		}
+		if h.AfterModel != nil {
+			out.AfterModel = chainAfter(out.AfterModel, h.AfterModel)
+		}
+		if h.BeforeTool != nil {
+			out.BeforeTool = chainBeforeTool(out.BeforeTool, h.BeforeTool)
+		}
+		if h.AfterTool != nil {
+			out.AfterTool = chainAfter(out.AfterTool, h.AfterTool)
+		}
+	}
+	return out
+}
+
+func chainBefore[E any](prev, next func(context.Context, E) error) func(context.Context, E) error {
+	if prev == nil {
+		return next
+	}
+	return func(ctx context.Context, e E) error {
+		if err := prev(ctx, e); err != nil {
+			return err
+		}
+		return next(ctx, e)
+	}
+}
+
+func chainBeforeTool(prev, next func(context.Context, *ToolEvent) error) func(context.Context, *ToolEvent) error {
+	if prev == nil {
+		return next
+	}
+	return func(ctx context.Context, e *ToolEvent) error {
+		if err := prev(ctx, e); err != nil || e.Deny != "" {
+			return err
+		}
+		return next(ctx, e)
+	}
+}
+
+func chainAfter[E any](prev, next func(context.Context, E)) func(context.Context, E) {
+	if prev == nil {
+		return next
+	}
+	return func(ctx context.Context, e E) {
+		prev(ctx, e)
+		next(ctx, e)
+	}
+}

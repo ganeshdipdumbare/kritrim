@@ -24,6 +24,69 @@ type DockerConfig struct {
 	Container string
 	// Network enables container networking. Default false.
 	Network bool
+
+	// The settings below harden containers kritrim creates (not attached
+	// ones). By default every capability is dropped, privilege escalation
+	// is disabled and memory, CPU and process counts are capped.
+
+	// User runs the container as this user ("uid:gid" or a name). Default:
+	// the image's user. A non-root user is recommended.
+	User string
+	// Memory caps container memory, e.g. "512m". Default "2g"; "none"
+	// removes the cap.
+	Memory string
+	// CPUs caps CPU, e.g. "1.5". Default "2"; "none" removes the cap.
+	CPUs string
+	// PidsLimit caps processes. Default 512; -1 removes the cap.
+	PidsLimit int
+	// ReadOnly mounts the root filesystem read-only with a writable /tmp.
+	// The box binary and Write go to /tmp.
+	ReadOnly bool
+	// CapAdd re-adds Linux capabilities, e.g. "CHOWN". Default none.
+	CapAdd []string
+}
+
+// dockerRunArgs builds the hardened `docker run` command line.
+func dockerRunArgs(cfg DockerConfig, name, image string, opts OpenConfig) []string {
+	args := []string{"run", "-d", "--rm", "--name", name,
+		"--cap-drop", "ALL", "--security-opt", "no-new-privileges"}
+	for _, c := range cfg.CapAdd {
+		args = append(args, "--cap-add", c)
+	}
+	if !cfg.Network && !opts.Network {
+		args = append(args, "--network", "none")
+	}
+	switch cfg.Memory {
+	case "none":
+	case "":
+		args = append(args, "--memory", "2g", "--memory-swap", "2g")
+	default:
+		args = append(args, "--memory", cfg.Memory, "--memory-swap", cfg.Memory)
+	}
+	switch cfg.CPUs {
+	case "none":
+	case "":
+		args = append(args, "--cpus", "2")
+	default:
+		args = append(args, "--cpus", cfg.CPUs)
+	}
+	switch {
+	case cfg.PidsLimit < 0:
+	case cfg.PidsLimit == 0:
+		args = append(args, "--pids-limit", "512")
+	default:
+		args = append(args, "--pids-limit", fmt.Sprint(cfg.PidsLimit))
+	}
+	if cfg.User != "" {
+		args = append(args, "--user", cfg.User)
+	}
+	if cfg.ReadOnly {
+		args = append(args, "--read-only", "--tmpfs", "/tmp:rw,exec,nosuid,size=512m")
+	}
+	for _, e := range opts.Env {
+		args = append(args, "-e", e)
+	}
+	return append(args, image, "sh", "-c", "while true; do sleep 3600; done")
 }
 
 // Docker returns a sandbox backed by the docker CLI. The image must provide
@@ -51,23 +114,19 @@ func (d *dockerSandbox) Open(ctx context.Context, opts OpenConfig) (Machine, err
 		return nil, errors.New("kritrim: Docker needs an image")
 	}
 	name := "kritrim-" + newID()[:10]
-	args := []string{"run", "-d", "--rm", "--name", name}
-	if !d.cfg.Network && !opts.Network {
-		args = append(args, "--network", "none")
-	}
-	for _, e := range opts.Env {
-		args = append(args, "-e", e)
-	}
-	args = append(args, image, "sh", "-c", "while true; do sleep 3600; done")
+	args := dockerRunArgs(d.cfg, name, image, opts)
 	if _, stderr, code, err := dockerRun(ctx, args, nil); err != nil || code != 0 {
 		return nil, fmt.Errorf("kritrim: docker run: %s %w", stderr, err)
 	}
-	return &dockerMachine{name: name}, nil
+	return &dockerMachine{name: name, viaExec: d.cfg.ReadOnly || d.cfg.User != ""}, nil
 }
 
 type dockerMachine struct {
 	name     string
 	external bool
+	// viaExec moves files with exec + cat instead of docker cp: cp cannot
+	// reach a tmpfs, and exec writes as the container user.
+	viaExec bool
 }
 
 func (m *dockerMachine) Exec(ctx context.Context, r ExecRequest) (ExecResult, error) {
@@ -178,6 +237,13 @@ func (m *dockerMachine) Start(ctx context.Context, r StartRequest) (Process, err
 }
 
 func (m *dockerMachine) Read(ctx context.Context, p string) ([]byte, error) {
+	if m.viaExec {
+		out, stderr, code, err := dockerRun(ctx, []string{"exec", m.name, "cat", "--", p}, nil)
+		if err != nil || code != 0 {
+			return nil, fmt.Errorf("kritrim: docker read %s: %s %w", p, stderr, err)
+		}
+		return []byte(out), nil
+	}
 	out, stderr, code, err := dockerRun(ctx, []string{"cp", m.name + ":" + p, "-"}, nil)
 	if err != nil || code != 0 {
 		return nil, fmt.Errorf("kritrim: docker cp read %s: %s %w", p, stderr, err)
@@ -194,6 +260,14 @@ func (m *dockerMachine) Write(ctx context.Context, p string, data []byte, mode f
 		if _, stderr, code, err := dockerRun(ctx, []string{"exec", m.name, "mkdir", "-p", strings.TrimSuffix(dir, "/")}, nil); err != nil || code != 0 {
 			return fmt.Errorf("kritrim: docker mkdir %s: %s %w", dir, stderr, err)
 		}
+	}
+	if m.viaExec {
+		script := `cat > "$1" && chmod "$2" "$1"`
+		args := []string{"exec", "-i", m.name, "sh", "-c", script, "sh", p, fmt.Sprintf("%o", mode.Perm())}
+		if _, stderr, code, err := dockerRun(ctx, args, data); err != nil || code != 0 {
+			return fmt.Errorf("kritrim: docker write %s: %s %w", p, stderr, err)
+		}
+		return nil
 	}
 	blob, err := tarOne(base, data, mode)
 	if err != nil {

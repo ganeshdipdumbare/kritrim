@@ -4,17 +4,17 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
-	"net"
 	"net/http"
 	"net/url"
-	"os"
-	"strings"
 	"sync"
 	"time"
+
+	"github.com/ganeshdipdumbare/kritrim/internal/netguard"
 )
 
-// PushConfig is a webhook the server calls when a task changes.
+// PushConfig is a webhook the server calls when a task changes. It comes
+// from the remote client, so header values are sent as given: "secret://"
+// references are never resolved against the server's environment.
 type PushConfig struct {
 	URL     string            `json:"url"`
 	Token   string            `json:"token,omitempty"`
@@ -85,7 +85,7 @@ func (s *Server) notify(ctx context.Context, task *Task) {
 		return
 	}
 	if !s.cfg.PushAllowPrivate {
-		if err := checkPublicPush(u.Hostname()); err != nil {
+		if err := netguard.CheckHost(ctx, u.Hostname()); err != nil {
 			return
 		}
 	}
@@ -104,9 +104,6 @@ func (s *Server) notify(ctx context.Context, task *Task) {
 		req.Header.Set("X-A2A-Notification-Token", cfg.Token)
 	}
 	for k, v := range cfg.Headers {
-		if strings.HasPrefix(v, "secret://") {
-			v = os.Getenv(strings.TrimPrefix(v, "secret://"))
-		}
 		req.Header.Set(k, v)
 	}
 	resp, err := s.pushClient.Do(req)
@@ -115,17 +112,18 @@ func (s *Server) notify(ctx context.Context, task *Task) {
 	}
 }
 
-func checkPublicPush(host string) error {
-	ips, err := net.LookupIP(host)
-	if err != nil {
-		return err
-	}
-	for _, ip := range ips {
-		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsUnspecified() {
-			return fmt.Errorf("a2a: push host %q resolves to a private address", host)
+// pushHTTPClient never follows redirects (a redirect is an SSRF hop) and,
+// unless private targets are allowed, re-checks the connected IP at dial
+// time so DNS rebinding cannot reach an internal address.
+func pushHTTPClient(base *http.Client, allowPrivate bool) *http.Client {
+	c := *base
+	if !allowPrivate {
+		if guarded, ok := netguard.Client(base, nil); ok {
+			c = *guarded
 		}
 	}
-	return nil
+	c.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	return &c
 }
 
 func (s *Server) pushSet(w http.ResponseWriter, r *http.Request, id json.RawMessage, raw json.RawMessage) {
@@ -136,6 +134,16 @@ func (s *Server) pushSet(w http.ResponseWriter, r *http.Request, id json.RawMess
 	if err := json.Unmarshal(raw, &p); err != nil || p.TaskID == "" || p.Config.URL == "" {
 		s.fail(w, id, -32602, "taskId and pushNotificationConfig.url are required")
 		return
+	}
+	if u, err := url.Parse(p.Config.URL); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		s.fail(w, id, -32602, "pushNotificationConfig.url must be an http(s) URL")
+		return
+	}
+	if !s.cfg.PushAllowPrivate {
+		if u, _ := url.Parse(p.Config.URL); netguard.CheckHost(r.Context(), u.Hostname()) != nil {
+			s.fail(w, id, -32602, "pushNotificationConfig.url must be a public host")
+			return
+		}
 	}
 	if err := s.cfg.Push.Set(r.Context(), p.TaskID, p.Config); err != nil {
 		s.fail(w, id, -32603, err.Error())

@@ -71,7 +71,8 @@ func Offload(dir string, threshold int) (kritrim.Hooks, kritrim.Tool) {
 			Path string `json:"path" desc:"file name returned by the offload marker"`
 		}) (string, error) {
 			name := filepath.Base(in.Path)
-			if name != in.Path || strings.Contains(name, "..") {
+			// Only files this hook wrote: random names, fixed prefix.
+			if name != in.Path || strings.Contains(name, "..") || !strings.HasPrefix(name, "offload-") || !strings.HasSuffix(name, ".txt") {
 				return "", fmt.Errorf("invalid path")
 			}
 			b, err := os.ReadFile(filepath.Join(dir, name))

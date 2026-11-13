@@ -2,6 +2,8 @@ package a2a
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,13 +21,17 @@ type Auth interface {
 }
 
 // Bearer accepts "Authorization: Bearer <token>". Read the token from the
-// environment or a secret store; never hard-code it.
+// environment or a secret store; never hard-code it. NewServer refuses an
+// empty token, and an empty token never authenticates.
 func Bearer(token string) Auth { return bearerAuth(token) }
 
 type bearerAuth string
 
 func (b bearerAuth) Check(r *http.Request) error {
-	if r.Header.Get("Authorization") != "Bearer "+string(b) {
+	got, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	want := sha256.Sum256([]byte(b))
+	have := sha256.Sum256([]byte(got))
+	if b == "" || !ok || subtle.ConstantTimeCompare(want[:], have[:]) != 1 {
 		return errors.New("a2a: unauthorized")
 	}
 	return nil
@@ -122,6 +128,9 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 	if cfg.Auth == nil {
 		return nil, errors.New("a2a: ServerConfig.Auth is required (use AllowAll only for development)")
 	}
+	if b, ok := cfg.Auth.(bearerAuth); ok && strings.TrimSpace(string(b)) == "" {
+		return nil, errors.New("a2a: Bearer token is empty")
+	}
 	if cfg.Tasks == nil {
 		cfg.Tasks = MemoryTasks()
 	}
@@ -146,10 +155,11 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 	if cfg.PushClient == nil {
 		cfg.PushClient = &http.Client{Timeout: 5 * time.Second}
 	}
+	pushClient := pushHTTPClient(cfg.PushClient, cfg.PushAllowPrivate)
 	cfg.Card.Capabilities.Streaming = true
 	cfg.Card.Capabilities.PushNotifications = true
 	return &Server{cfg: cfg, contexts: map[string]*contextEntry{}, cancels: map[string]context.CancelFunc{},
-		pushClient: cfg.PushClient}, nil
+		pushClient: pushClient}, nil
 }
 
 // Close closes every cached agent.

@@ -5,6 +5,7 @@ package sandboxtest
 import (
 	"context"
 	"io"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -12,8 +13,16 @@ import (
 	"github.com/ganeshdipdumbare/kritrim"
 )
 
-// Run checks exec, files, long-lived stdio and lifecycle on one sandbox.
+// Run checks exec, files, long-lived stdio and lifecycle on one sandbox,
+// using /tmp inside the sandbox for scratch files.
 func Run(t *testing.T, s kritrim.Sandbox) {
+	t.Helper()
+	RunDir(t, s, "/tmp")
+}
+
+// RunDir is Run with an explicit scratch directory inside the sandbox. Use
+// t.TempDir() for sandboxes that share the host filesystem (Local).
+func RunDir(t *testing.T, s kritrim.Sandbox, dir string) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
@@ -32,7 +41,7 @@ func Run(t *testing.T, s kritrim.Sandbox) {
 		t.Fatalf("exec: %+v %v", res, err)
 	}
 
-	path := "/tmp/kritrim-conformance.txt"
+	path := strings.TrimSuffix(dir, "/") + "/kritrim-conformance-" + strconv.FormatInt(time.Now().UnixNano(), 36) + ".txt"
 	if err := m.Write(ctx, path, []byte("hello"), 0o644); err != nil {
 		t.Fatalf("write: %v", err)
 	}

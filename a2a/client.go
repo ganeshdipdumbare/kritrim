@@ -77,7 +77,17 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 	if !allowed(u.Hostname(), cfg.AllowHosts) {
 		return nil, fmt.Errorf("a2a: host %q is not allowed", u.Hostname())
 	}
-	return &Client{base: u, cfg: cfg, http: cfg.Client}, nil
+	// Requests carry credentials, so a redirect must stay on the same host;
+	// anything else is returned to the caller instead of followed.
+	hc := *cfg.Client
+	hc.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 5 || !strings.EqualFold(req.URL.Host, via[0].URL.Host) ||
+			!allowed(req.URL.Hostname(), cfg.AllowHosts) {
+			return http.ErrUseLastResponse
+		}
+		return nil
+	}
+	return &Client{base: u, cfg: cfg, http: &hc}, nil
 }
 
 func allowed(host string, rules []string) bool {

@@ -3,13 +3,14 @@ package kritrim
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
+	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -28,6 +29,21 @@ type runParams struct {
 	Images     []Image             `json:"images,omitempty"`
 	Schema     map[string]any      `json:"schema,omitempty"`
 	SchemaName string              `json:"schema_name,omitempty"`
+	Run        string              `json:"run,omitempty"`
+}
+
+// activeRun is the host's own record of the run in progress. Identity and
+// approvals come from here, never from what the box claims.
+type activeRun struct {
+	thread, user, run string
+	roles             []string
+	grants            map[string]grant // call id -> approved risky call
+}
+
+// grant is one approved call of a risky tool, bound to its exact arguments.
+type grant struct {
+	tool string
+	args string
 }
 
 type secretBinding struct {
@@ -45,11 +61,17 @@ type boxHost struct {
 	emu  sync.RWMutex
 	emit func(Event)
 
-	umu  sync.Mutex
+	umu  sync.Mutex // serializes model calls so the budget check is exact
 	used int
 
-	smu     sync.Mutex
-	secrets map[string]secretBinding
+	smu      sync.Mutex
+	secrets  map[string]secretBinding
+	secretPH map[string]string // secret name -> placeholder
+
+	cmu sync.Mutex
+	cur *activeRun
+
+	cleanup func()
 
 	runMu sync.Mutex
 }
@@ -80,6 +102,9 @@ func newSealed(cfg Config) (*Agent, error) {
 	}
 	if cfg.Limits.ToolCalls == 0 {
 		cfg.Limits.ToolCalls = 100
+	}
+	if cfg.Limits.Tokens == 0 {
+		cfg.Limits.Tokens = DefaultTokenLimit
 	}
 	if cfg.Session == nil {
 		cfg.Session = MemorySessions()
@@ -115,8 +140,21 @@ func newSealed(cfg Config) (*Agent, error) {
 		_ = m.Close(ctx)
 		return nil, fmt.Errorf("kritrim: read box binary: %w", err)
 	}
-	const boxBin = "/tmp/kritrim-agent"
+	// A fresh, unguessable path: on Local it is a private temp dir, so
+	// nothing another user planted can be followed or swapped.
+	boxBin := "/tmp/kritrim-agent-" + newID()
+	cleanup := func() {}
+	if _, local := s.Sandbox.(localSandbox); local {
+		dir, err := os.MkdirTemp("", "kritrim-box-")
+		if err != nil {
+			_ = m.Close(ctx)
+			return nil, err
+		}
+		boxBin = filepath.Join(dir, "agent")
+		cleanup = func() { _ = os.RemoveAll(dir) }
+	}
 	if err := m.Write(ctx, boxBin, data, 0o755); err != nil {
+		cleanup()
 		_ = m.Close(ctx)
 		return nil, fmt.Errorf("kritrim: upload box binary: %w", err)
 	}
@@ -133,7 +171,7 @@ func newSealed(cfg Config) (*Agent, error) {
 		return nil, err
 	}
 	b := &boxHost{a: a, p: newPeer(proc.Stdout(), proc.Stdin()), m: m, proc: proc, cfg: *s,
-		secrets: map[string]secretBinding{}}
+		secrets: map[string]secretBinding{}, secretPH: map[string]string{}, cleanup: cleanup}
 	b.cfg.Bridged = append([]string(nil), b.cfg.Bridged...)
 	b.cfg.Bridged = append(b.cfg.Bridged, a.mcpTools...)
 	b.register()
@@ -153,16 +191,38 @@ func newSealed(cfg Config) (*Agent, error) {
 
 // syncTools sends the definitions of bridged host tools to the box.
 func (b *boxHost) syncTools(ctx context.Context) error {
-	var defs []Tool
+	var defs []bridgedTool
 	for _, name := range b.cfg.Bridged {
 		if t, ok := b.a.tool(name); ok {
-			defs = append(defs, t)
+			defs = append(defs, bridgedTool{Tool: t, Risky: t.risky()})
 		}
 	}
 	if len(defs) == 0 {
 		return nil
 	}
 	return b.p.call(ctx, "tools.add", defs, nil)
+}
+
+// bridgedTool is a host tool definition sent to the box. Risky lets the box
+// run its normal approval flow; the host still enforces it.
+type bridgedTool struct {
+	Tool
+	Risky bool `json:"risky,omitempty"`
+}
+
+// current returns the run in progress or an error when there is none; the
+// box may only use host capabilities during a run the host started.
+func (b *boxHost) current() (*activeRun, error) {
+	b.cmu.Lock()
+	defer b.cmu.Unlock()
+	if b.cur == nil {
+		return nil, errors.New("kritrim: no run in progress")
+	}
+	return b.cur, nil
+}
+
+func (b *boxHost) runCtx(ctx context.Context, r *activeRun) context.Context {
+	return withIdentity(ctx, r.thread, r.user, r.run, r.roles)
 }
 
 func (b *boxHost) register() {
@@ -196,21 +256,30 @@ func (b *boxHost) model(ctx context.Context, raw json.RawMessage) (any, error) {
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return nil, err
 	}
+	if _, err := b.current(); err != nil {
+		return nil, err
+	}
 	p.Request.Model = b.a.Model()
+	// One model call at a time, and the budget is checked before the call,
+	// so a box cannot spend past it by calling again or in parallel.
+	b.umu.Lock()
+	defer b.umu.Unlock()
+	if b.cfg.MaxTokens > 0 {
+		left := b.cfg.MaxTokens - b.used
+		if left <= 0 {
+			return nil, fmt.Errorf("kritrim: sealed token budget %d exceeded (%d used)", b.cfg.MaxTokens, b.used)
+		}
+		if p.Request.MaxTokens <= 0 || p.Request.MaxTokens > left {
+			p.Request.MaxTokens = left
+		}
+	}
 	resp, err := b.a.model.Stream(ctx, p.Request, func(d Delta) {
 		b.p.notify("model.delta", map[string]any{"call": p.Call, "text": d.Text, "reasoning": d.Reasoning})
 	})
 	if err != nil {
 		return nil, err
 	}
-	b.umu.Lock()
 	b.used += resp.Usage.Total()
-	over := b.cfg.MaxTokens > 0 && b.used > b.cfg.MaxTokens
-	used := b.used
-	b.umu.Unlock()
-	if over {
-		return nil, fmt.Errorf("kritrim: sealed token budget %d exceeded (%d used)", b.cfg.MaxTokens, used)
-	}
 	return resp, nil
 }
 
@@ -223,7 +292,11 @@ func (b *boxHost) http(ctx context.Context, raw json.RawMessage) (any, error) {
 	for _, hosts := range b.cfg.Secrets {
 		allow = append(allow, hosts...)
 	}
+	if _, err := b.current(); err != nil {
+		return nil, err
+	}
 	r.AllowHosts = allow
+	r.sensitive = false
 	if err := b.substitute(&r); err != nil {
 		return nil, err
 	}
@@ -251,6 +324,14 @@ func (b *boxHost) substitute(r *httpRequest) error {
 	for ph, bind := range b.secrets {
 		if !hostListed(host, bind.hosts) {
 			continue
+		}
+		if strings.Contains(r.URL, ph) || bytes.Contains(r.Body, []byte(ph)) {
+			r.sensitive = true
+		}
+		for _, v := range r.Headers {
+			if strings.Contains(v, ph) {
+				r.sensitive = true
+			}
 		}
 		r.URL = strings.ReplaceAll(r.URL, ph, bind.value)
 		for k, v := range r.Headers {
@@ -286,24 +367,33 @@ func (b *boxHost) secret(ctx context.Context, raw json.RawMessage) (any, error) 
 	if err != nil {
 		return nil, err
 	}
-	sum := sha256.Sum256([]byte(p.Name + "\x00" + value))
-	ph := "kritrim_sec_" + hex.EncodeToString(sum[:8])
 	b.smu.Lock()
+	defer b.smu.Unlock()
+	ph, ok := b.secretPH[p.Name]
+	if !ok {
+		// Random, so the placeholder reveals nothing about the value.
+		var buf [16]byte
+		if _, err := rand.Read(buf[:]); err != nil {
+			return nil, err
+		}
+		ph = "kritrim_sec_" + hex.EncodeToString(buf[:])
+		b.secretPH[p.Name] = ph
+	}
 	b.secrets[ph] = secretBinding{value: value, hosts: hosts}
-	b.smu.Unlock()
 	return ph, nil
 }
 
 func (b *boxHost) tool(ctx context.Context, raw json.RawMessage) (any, error) {
 	var p struct {
-		Name   string         `json:"name"`
-		Args   map[string]any `json:"args"`
-		Thread string         `json:"thread,omitempty"`
-		User   string         `json:"user,omitempty"`
-		Run    string         `json:"run,omitempty"`
-		Roles  []string       `json:"roles,omitempty"`
+		Name string         `json:"name"`
+		Args map[string]any `json:"args"`
+		Call string         `json:"call,omitempty"`
 	}
 	if err := json.Unmarshal(raw, &p); err != nil {
+		return nil, err
+	}
+	r, err := b.current()
+	if err != nil {
 		return nil, err
 	}
 	if !contains(b.cfg.Bridged, p.Name) {
@@ -313,30 +403,62 @@ func (b *boxHost) tool(ctx context.Context, raw json.RawMessage) (any, error) {
 	if !ok {
 		return nil, fmt.Errorf("kritrim: host tool %q not found", p.Name)
 	}
-	ctx = withIdentity(ctx, p.Thread, p.User, p.Run, p.Roles)
+	ctx = b.runCtx(ctx, r)
+	o := runOptions{thread: r.thread, user: r.user}
+	if t.risky() {
+		// The host enforces approval itself: a risky bridged tool runs only
+		// for a call the host approved, with exactly the approved arguments.
+		b.cmu.Lock()
+		g, ok := r.grants[p.Call]
+		if ok {
+			delete(r.grants, p.Call)
+		}
+		b.cmu.Unlock()
+		if !ok || p.Call == "" || g.tool != p.Name || g.args != canonicalArgs(p.Args) {
+			b.a.audit(ctx, o, "denied", t.Name, "risky bridged tool called without host approval")
+			return nil, fmt.Errorf("kritrim: tool %q needs approval", p.Name)
+		}
+	}
+	if err := t.checkArgs(p.Args); err != nil {
+		return nil, err
+	}
 	ctx = context.WithValue(ctx, keyEnv, b.a.env)
 	out, err := runTool(ctx, t, p.Args)
 	if err != nil {
 		return nil, err
 	}
 	out = b.a.redactor.redact(out)
-	b.a.audit(ctx, runOptions{thread: p.Thread, user: p.User}, "tool", t.Name,
+	b.a.audit(ctx, o, "tool", t.Name,
 		"args="+b.a.redactor.redact(jsonString(p.Args))+" result="+truncate(out, 2000))
 	return out, nil
 }
 
+func canonicalArgs(args map[string]any) string {
+	if args == nil {
+		args = map[string]any{}
+	}
+	b, _ := json.Marshal(args) // map keys are sorted
+	return string(b)
+}
+
 func (b *boxHost) approve(ctx context.Context, raw json.RawMessage) (any, error) {
 	var p struct {
-		Req    Approval `json:"req"`
-		Thread string   `json:"thread,omitempty"`
-		User   string   `json:"user,omitempty"`
-		Run    string   `json:"run,omitempty"`
-		Roles  []string `json:"roles,omitempty"`
+		Req Approval `json:"req"`
 	}
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return nil, err
 	}
-	ctx = withIdentity(ctx, p.Thread, p.User, p.Run, p.Roles)
+	r, err := b.current()
+	if err != nil {
+		return nil, err
+	}
+	ctx = b.runCtx(ctx, r)
+	o := runOptions{thread: r.thread, user: r.user}
+	if _, ok := b.a.tool(p.Req.Tool); !ok {
+		return Reject("unknown tool"), nil
+	}
+	// The approver sees a message built by the host, not text from the box.
+	p.Req.Message = fmt.Sprintf("Approve %s with %s?", p.Req.Tool, jsonString(p.Req.Args))
 	if b.a.cfg.Approve == nil {
 		return Reject("approval required and Config.Approve is nil"), nil
 	}
@@ -344,9 +466,23 @@ func (b *boxHost) approve(ctx context.Context, raw json.RawMessage) (any, error)
 	if err != nil {
 		return nil, err
 	}
-	b.a.audit(ctx, runOptions{thread: p.Thread, user: p.User}, "approval", p.Req.Tool,
+	b.grant(r, p.Req.CallID, p.Req.Tool, p.Req.Args, dec)
+	b.a.audit(ctx, o, "approval", p.Req.Tool,
 		fmt.Sprintf("approve=%v reason=%s", dec.Approve, dec.Reason))
 	return dec, nil
+}
+
+// grant records an approved call so the bridged tool may run once.
+func (b *boxHost) grant(r *activeRun, callID, tool string, args map[string]any, dec Decision) {
+	if callID == "" || dec.Pause || dec.Respond != "" || (!dec.Approve && dec.Args == nil) {
+		return
+	}
+	if dec.Args != nil {
+		args = dec.Args
+	}
+	b.cmu.Lock()
+	r.grants[callID] = grant{tool: tool, args: canonicalArgs(args)}
+	b.cmu.Unlock()
 }
 
 func withIdentity(ctx context.Context, thread, user, run string, roles []string) context.Context {
@@ -362,7 +498,16 @@ func (b *boxHost) audit(ctx context.Context, raw json.RawMessage) (any, error) {
 	if err := json.Unmarshal(raw, &e); err != nil {
 		return nil, err
 	}
+	r, err := b.current()
+	if err != nil {
+		return nil, err
+	}
 	if b.a.cfg.Audit != nil {
+		// Entries from the box are marked and carry the host's identity;
+		// seq, time and hashes are assigned by the sink.
+		e.Source = "box"
+		e.Run, e.Thread, e.User = r.run, r.thread, r.user
+		e.Seq, e.Time, e.Prev, e.Hash = 0, 0, "", ""
 		e.Detail = b.a.redactor.redact(e.Detail)
 		if err := b.a.cfg.Audit.Write(ctx, e); err != nil {
 			return nil, err
@@ -374,13 +519,27 @@ func (b *boxHost) audit(ctx context.Context, raw json.RawMessage) (any, error) {
 func (b *boxHost) run(ctx context.Context, prompt string, emit func(Event), o runOptions) (*Result, error) {
 	b.runMu.Lock()
 	defer b.runMu.Unlock()
+	b.a.identity(&o)
+	if o.onEvent != nil {
+		emit = o.onEvent
+	}
+	if o.runID == "" {
+		o.runID = newID()
+	}
 	b.emu.Lock()
 	b.emit = emit
 	b.emu.Unlock()
+	cur := &activeRun{thread: o.thread, user: o.user, run: o.runID, roles: o.roles, grants: map[string]grant{}}
+	b.cmu.Lock()
+	b.cur = cur
+	b.cmu.Unlock()
 	defer func() {
 		b.emu.Lock()
 		b.emit = nil
 		b.emu.Unlock()
+		b.cmu.Lock()
+		b.cur = nil
+		b.cmu.Unlock()
 	}()
 
 	var msgs []Message
@@ -397,12 +556,20 @@ func (b *boxHost) run(ctx context.Context, prompt string, emit func(Event), o ru
 			msgs, pending, paused = loaded.Messages, loaded.Pending, loaded.Paused
 		}
 	}
+	// Decisions supplied to resume a paused thread are host approvals too;
+	// bind each to the interrupt the host stored.
+	for _, in := range pending {
+		if d, ok := o.decisions[in.ID]; ok {
+			b.grant(cur, in.ID, in.Tool, in.Args, d)
+		}
+	}
 	schema, wrapped, err := outputSchema(o.output)
 	if err != nil {
 		return nil, err
 	}
 	params := runParams{Prompt: prompt, Thread: o.thread, Messages: msgs, Pending: pending, Paused: paused,
-		Decisions: o.decisions, User: o.user, Roles: o.roles, Images: o.images, Schema: schema, SchemaName: "output"}
+		Decisions: o.decisions, User: o.user, Roles: o.roles, Images: o.images, Schema: schema, SchemaName: "output",
+		Run: o.runID}
 	done := make(chan struct{})
 	go func() {
 		select {
@@ -437,7 +604,11 @@ func (b *boxHost) close() error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
-	return b.m.Close(ctx)
+	err := b.m.Close(ctx)
+	if b.cleanup != nil {
+		b.cleanup()
+	}
+	return err
 }
 
 func hostListed(host string, rules []string) bool {

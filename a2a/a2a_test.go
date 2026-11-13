@@ -245,3 +245,55 @@ func TestUnauthorizedStatus(t *testing.T) {
 		t.Fatalf("status %d", resp.StatusCode)
 	}
 }
+
+func TestEmptyBearerRejected(t *testing.T) {
+	if _, err := NewServer(ServerConfig{Card: Card{Name: "x"}, Auth: Bearer(""),
+		Agent: func(string) (*kritrim.Agent, error) { return nil, nil }}); err == nil {
+		t.Fatal("empty bearer token accepted")
+	}
+	r := httptest.NewRequest(http.MethodPost, "/", nil)
+	r.Header.Set("Authorization", "Bearer ")
+	if Bearer("").Check(r) == nil {
+		t.Fatal("empty token authenticated")
+	}
+	r.Header.Set("Authorization", "Bearer tok")
+	if Bearer("tok").Check(r) != nil {
+		t.Fatal("valid token refused")
+	}
+}
+
+func TestPushHeadersNeverResolveSecrets(t *testing.T) {
+	t.Setenv("A2A_TEST_SERVER_SECRET", "server-api-key")
+	got := make(chan string, 1)
+	recv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got <- r.Header.Get("X-Leak")
+	}))
+	defer recv.Close()
+	srv, err := NewServer(ServerConfig{Card: Card{Name: "x"}, Auth: AllowAll(), PushAllowPrivate: true,
+		Agent: func(string) (*kritrim.Agent, error) { return nil, nil }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	_ = srv.cfg.Push.Set(ctx, "t1", PushConfig{URL: recv.URL, Headers: map[string]string{"X-Leak": "secret://A2A_TEST_SERVER_SECRET"}})
+	srv.notify(ctx, &Task{ID: "t1"})
+	if v := <-got; v == "server-api-key" {
+		t.Fatal("push header resolved a server secret")
+	}
+}
+
+func TestPushPrivateURLRefused(t *testing.T) {
+	srv, err := NewServer(ServerConfig{Card: Card{Name: "x"}, Auth: AllowAll(),
+		Agent: func(string) (*kritrim.Agent, error) { return nil, nil }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	c, _ := NewClient(ClientConfig{Endpoint: ts.URL})
+	for _, u := range []string{"http://127.0.0.1/hook", "http://169.254.169.254/latest", "file:///etc/passwd"} {
+		if err := c.SetPush(context.Background(), "t1", PushConfig{URL: u}); err == nil {
+			t.Fatalf("push URL %s accepted", u)
+		}
+	}
+}

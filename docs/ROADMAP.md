@@ -138,6 +138,38 @@ tests; prompt-cache body test; Docker attach and streamed-exec tests; A2A
 push webhook test; OpenAI Responses text/tool/stream/schema tests; OTel
 traces/metrics/logs export test.
 
+## v0.8 — hardening pass (shipped)
+
+- Sealed host treats the box as untrusted: risky bridged tools need a
+  host-recorded approval bound to call id and arguments; identity comes from
+  the host's run; box audit entries are marked `source: "box"`; the token
+  budget is checked before each call; secret placeholders are random; the box
+  binary goes to an unguessable path (a private temp dir on Local).
+- File tools use `os.Root` (no symlink escape); the shell allowlist is
+  enforced everywhere; commands and MCP stdio servers get a minimal env.
+- `internal/netguard`: dial-time SSRF checks (rebinding), wider private
+  ranges (CGNAT, NAT64, 6to4, reserved); secrets never follow cross-host
+  redirects; HTTP methods and schemes are restricted.
+- Tool arguments are validated against the tool schema.
+- `AuditKey`: HMAC-chained audit with a signed head (truncation detected).
+- Webhooks: timestamped signature over key and body, replay window,
+  single-flight dedupe with TTL, no error leakage; `trigger.Sign`.
+- Docker: cap-drop ALL, no-new-privileges, memory/CPU/pids caps, optional
+  user and read-only root.
+- A2A: constant-time bearer, empty token refused, push headers never resolve
+  `secret://`, push URLs public-only with no redirects, client redirects
+  pinned to the host.
+- `kritrim.Chain` composes hooks; default per-run token cap
+  (`DefaultTokenLimit`).
+- CI: govulncheck, staticcheck, short fuzzing, coverage.
+
+**Gate:** `hardening_test.go`, netguard and jsonschema tests and fuzzers,
+A2A push/bearer tests, webhook replay and concurrency tests, Docker argument
+test.
+
+**Still open:** pluggable webhook dedupe store for multi-instance
+deployments; richer hooks (retry requests, tool swap, end turn).
+
 ## v1.0 — freeze
 
 API stability, migration guide, benchmarks, docs site, signed releases.
