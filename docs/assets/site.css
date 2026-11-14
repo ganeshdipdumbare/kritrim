@@ -501,11 +501,22 @@ body[data-page="introduction"] .hero-grid > :nth-child(2) { animation-delay: .1s
   .table { overflow: visible; border: 0; border-radius: 0; }
   .table table, .table tbody, .table tr, .table td { display: block; width: 100%; }
   .table thead { display: none; }
-  .table tr { padding: 12px 0; border-bottom: 1px solid var(--line); }
+  .table tr { padding: 14px 0; border-bottom: 1px solid var(--line); }
   .table tr:last-child { border-bottom: 0; }
   .table td { padding: 0; border: 0; }
-  .table td + td { margin-top: 6px; }
+  .table td + td { margin-top: 10px; }
   .table td:first-child { color: var(--fg); font-weight: 500; }
+  /* Column headers survive the stacked layout as per-cell labels. */
+  .table td[data-label]::before {
+    content: attr(data-label);
+    display: block;
+    margin: 0 0 3px;
+    font: 600 11px/1.2 var(--f-mono);
+    letter-spacing: .06em;
+    text-transform: uppercase;
+    color: var(--fg-3);
+  }
+  .table td:first-child[data-label]::before { display: none; }
   .page h1 { font-size: 28px; }
   .page h2 { font-size: 23px; margin-top: 44px; }
   .page h3 { font-size: 19px; margin-top: 32px; }

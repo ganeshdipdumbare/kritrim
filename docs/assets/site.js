@@ -383,4 +383,17 @@
 
   var totop = document.getElementById("totop");
   if (totop) totop.addEventListener("click", function () { window.scrollTo({ top: 0, behavior: "smooth" }); });
+
+  // ---- mobile table labels (thead is hidden when stacked) ----
+  document.querySelectorAll(".table table").forEach(function (table) {
+    var heads = Array.prototype.map.call(table.querySelectorAll("thead th"), function (th) {
+      return th.textContent.replace(/\s+/g, " ").trim();
+    });
+    if (!heads.length) return;
+    table.querySelectorAll("tbody tr").forEach(function (tr) {
+      Array.prototype.forEach.call(tr.children, function (td, i) {
+        if (heads[i]) td.setAttribute("data-label", heads[i]);
+      });
+    });
+  });
 })();

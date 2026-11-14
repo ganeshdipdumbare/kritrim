@@ -1,6 +1,4 @@
-<p align="center"><img src="docs/assets/img/mark.svg" width="72" alt="kritrim"></p>
-
-<h1 align="center">kritrim</h1>
+<p align="center"><img src="docs/assets/img/wordmark.png" width="220" alt="kritrim"></p>
 
 <p align="center"><b>Docs:</b> <a href="https://kritrim-docs.vercel.app">kritrim-docs.vercel.app</a></p>
 
