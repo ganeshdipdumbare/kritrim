@@ -29,7 +29,20 @@ type Config struct {
 	Model Model
 	// Fallback models are tried in order when a model call keeps failing
 	// with a retryable error.
-	Fallback     []Model
+	Fallback []Model
+	// Route picks the model for a run from the prompt, the identity and
+	// anything else in the context. Returning nil uses Model. Fallback
+	// still applies to whatever Route returned. Where Fallback reacts to a
+	// failure, Route decides up front — send short questions to a small
+	// model and hard ones to a large one.
+	//
+	//	Route: func(ctx context.Context, prompt string) kritrim.Model {
+	//		if len(prompt) < 200 {
+	//			return small
+	//		}
+	//		return nil // Config.Model
+	//	}
+	Route        func(ctx context.Context, prompt string) Model
 	Instructions string
 
 	// Tools are the tools the model may call.
@@ -41,6 +54,9 @@ type Config struct {
 	// PromptCache asks providers that support it to cache the system
 	// prompt and tools.
 	PromptCache bool
+	// Reasoning asks the model to think before answering. nil leaves the
+	// provider default.
+	Reasoning *Reasoning
 	// MCP connects MCP servers at startup. Their tools are added to Tools.
 	MCP []MCPConfig
 
@@ -168,6 +184,9 @@ func New(cfg Config) (*Agent, error) {
 	if cfg.Model == nil {
 		return nil, errors.New("kritrim: no model; set Config.Model")
 	}
+	if err := cfg.Reasoning.validate(); err != nil {
+		return nil, err
+	}
 	if cfg.Limits.Steps == 0 {
 		cfg.Limits.Steps = 20
 	}
@@ -288,10 +307,14 @@ func (a *Agent) Close() error {
 	return err
 }
 
-// Model reports the model the agent was built with.
-func (a *Agent) Model() string {
-	if m, ok := a.model.(interface{ Name() string }); ok {
-		return m.Name()
+// Model reports the model the agent was built with. A run that Config.Route
+// sent elsewhere records its own model in the audit log.
+func (a *Agent) Model() string { return modelName(a.model) }
+
+// modelName is a provider's name for itself, or "" for one that has none.
+func modelName(m Model) string {
+	if n, ok := m.(interface{ Name() string }); ok {
+		return n.Name()
 	}
 	return ""
 }

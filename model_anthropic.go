@@ -42,6 +42,8 @@ type anBlock struct {
 	ToolUseID string         `json:"tool_use_id,omitempty"`
 	Content   any            `json:"content,omitempty"`
 	Source    any            `json:"source,omitempty"`
+	Thinking  string         `json:"thinking,omitempty"`
+	Signature string         `json:"signature,omitempty"`
 }
 
 type anMsg struct {
@@ -57,7 +59,13 @@ type anRequest struct {
 	Tools       []anTool `json:"tools,omitempty"`
 	ToolChoice  any      `json:"tool_choice,omitempty"`
 	Temperature *float64 `json:"temperature,omitempty"`
+	Thinking    *anThink `json:"thinking,omitempty"`
 	Stream      bool     `json:"stream,omitempty"`
+}
+
+type anThink struct {
+	Type         string `json:"type"`
+	BudgetTokens int    `json:"budget_tokens"`
 }
 
 type anTool struct {
@@ -128,6 +136,15 @@ func (m *anthropicModel) request(req Request, stream bool) anRequest {
 		max = 4096
 	}
 	out := anRequest{Model: m.name, MaxTokens: max, Temperature: req.Temperature, Stream: stream}
+	if b := req.Reasoning.budget(); b > 0 {
+		out.Thinking = &anThink{Type: "enabled", BudgetTokens: b}
+		// Thinking needs room to think in, and Anthropic only accepts the
+		// default temperature while it is enabled.
+		if out.MaxTokens <= b {
+			out.MaxTokens = b + 4096
+		}
+		out.Temperature = nil
+	}
 	if req.System != "" {
 		if req.Cache {
 			out.System = []any{map[string]any{"type": "text", "text": req.System, "cache_control": map[string]any{"type": "ephemeral"}}}
@@ -172,6 +189,12 @@ func appendAn(msgs []anMsg, msg Message) []anMsg {
 		return append(msgs, anMsg{Role: "user", Content: []anBlock{block}})
 	case RoleAssistant:
 		var blocks []anBlock
+		// The thinking block comes first and keeps its signature: with
+		// extended thinking on, Anthropic refuses a tool result whose
+		// assistant turn dropped the thinking that asked for it.
+		if msg.ReasoningSig != "" {
+			blocks = append(blocks, anBlock{Type: "thinking", Thinking: msg.Reasoning, Signature: msg.ReasoningSig})
+		}
 		if msg.Content != "" {
 			blocks = append(blocks, anBlock{Type: "text", Text: msg.Content})
 		}
@@ -227,6 +250,7 @@ func (m *anthropicModel) readSSE(ctx context.Context, r io.Reader, req Request, 
 				Type        string `json:"type"`
 				Text        string `json:"text"`
 				Thinking    string `json:"thinking"`
+				Signature   string `json:"signature"`
 				PartialJSON string `json:"partial_json"`
 				StopReason  string `json:"stop_reason"`
 			} `json:"delta"`
@@ -258,6 +282,8 @@ func (m *anthropicModel) readSSE(ctx context.Context, r io.Reader, req Request, 
 				case "thinking_delta":
 					emit(Delta{Reasoning: ev.Delta.Thinking})
 					out.Reasoning += ev.Delta.Thinking
+				case "signature_delta":
+					out.ReasoningSig += ev.Delta.Signature
 				case "input_json_delta":
 					b.json.WriteString(ev.Delta.PartialJSON)
 				}
@@ -305,7 +331,10 @@ func (m *anthropicModel) collect(out *Response, blocks []anBlock, _ map[string]a
 		case "text":
 			text.WriteString(b.Text)
 		case "thinking":
-			out.Reasoning += b.Text
+			out.Reasoning += b.Thinking
+			if b.Signature != "" {
+				out.ReasoningSig = b.Signature
+			}
 		case "tool_use":
 			if req.Schema != nil && b.Name == schemaTool(req) {
 				out.Text = jsonString(b.Input)

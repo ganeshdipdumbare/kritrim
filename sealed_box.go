@@ -259,3 +259,6 @@ type rpcAudit struct{ p *peer }
 func (a rpcAudit) Write(ctx context.Context, e Entry) error {
 	return a.p.call(ctx, "audit", e, nil)
 }
+
+// sandboxed is always true inside a box: the whole agent is the sandbox.
+func (e *boxEnv) sandboxed() bool { return true }

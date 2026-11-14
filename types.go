@@ -19,6 +19,11 @@ type Message struct {
 	ToolCallID string     `json:"tool_call_id,omitempty"`
 	ToolName   string     `json:"tool_name,omitempty"`
 	Images     []Image    `json:"images,omitempty"`
+	// Reasoning is the thinking that produced an assistant turn, kept
+	// because some providers (Anthropic) refuse a tool result unless the
+	// thinking block that asked for it is replayed with its signature.
+	Reasoning    string `json:"reasoning,omitempty"`
+	ReasoningSig string `json:"reasoning_sig,omitempty"`
 }
 
 // Image is an image attached to a user message.

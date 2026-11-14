@@ -57,15 +57,21 @@ type rTool struct {
 }
 
 type rRequest struct {
-	Model           string   `json:"model"`
-	Instructions    string   `json:"instructions,omitempty"`
-	Input           []rInput `json:"input"`
-	Tools           []rTool  `json:"tools,omitempty"`
-	ToolChoice      any      `json:"tool_choice,omitempty"`
-	MaxOutputTokens int      `json:"max_output_tokens,omitempty"`
-	Temperature     *float64 `json:"temperature,omitempty"`
-	Text            *rText   `json:"text,omitempty"`
-	Stream          bool     `json:"stream,omitempty"`
+	Model           string      `json:"model"`
+	Instructions    string      `json:"instructions,omitempty"`
+	Input           []rInput    `json:"input"`
+	Tools           []rTool     `json:"tools,omitempty"`
+	ToolChoice      any         `json:"tool_choice,omitempty"`
+	MaxOutputTokens int         `json:"max_output_tokens,omitempty"`
+	Temperature     *float64    `json:"temperature,omitempty"`
+	Text            *rText      `json:"text,omitempty"`
+	Reasoning       *rReasoning `json:"reasoning,omitempty"`
+	Stream          bool        `json:"stream,omitempty"`
+}
+
+type rReasoning struct {
+	Effort  string `json:"effort,omitempty"`
+	Summary string `json:"summary,omitempty"`
 }
 
 type rText struct {
@@ -186,6 +192,13 @@ func (m *responsesModel) do(ctx context.Context, req Request, stream bool, emit 
 func (m *responsesModel) request(req Request, stream bool) rRequest {
 	out := rRequest{Model: m.name, Instructions: req.System, MaxOutputTokens: req.MaxTokens,
 		Temperature: req.Temperature, Stream: stream}
+	if e := req.Reasoning.effort(); e != "" {
+		out.Reasoning = &rReasoning{Effort: e}
+		if req.Reasoning.Include {
+			out.Reasoning.Summary = "auto"
+		}
+		out.Temperature = nil
+	}
 	for _, msg := range req.Messages {
 		out.Input = appendRInput(out.Input, msg)
 	}

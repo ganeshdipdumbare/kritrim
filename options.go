@@ -17,6 +17,10 @@ type runOptions struct {
 	runID     string
 	idemKey   string
 
+	// model is the model this run uses: Config.Route's choice, or
+	// Config.Model. Resolved once, before the loop.
+	model Model
+
 	// schema is set by a sealed host so the box requests structured output
 	// without owning the caller's output type.
 	schema     map[string]any

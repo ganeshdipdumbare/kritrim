@@ -74,12 +74,20 @@ type gemRequest struct {
 			Mode string `json:"mode"`
 		} `json:"functionCallingConfig"`
 	} `json:"toolConfig,omitempty"`
-	GenerationConfig *struct {
-		Temperature     *float64       `json:"temperature,omitempty"`
-		MaxOutputTokens int            `json:"maxOutputTokens,omitempty"`
-		ResponseMime    string         `json:"responseMimeType,omitempty"`
-		ResponseSchema  map[string]any `json:"responseSchema,omitempty"`
-	} `json:"generationConfig,omitempty"`
+	GenerationConfig *gemGenConfig `json:"generationConfig,omitempty"`
+}
+
+type gemGenConfig struct {
+	Temperature     *float64       `json:"temperature,omitempty"`
+	MaxOutputTokens int            `json:"maxOutputTokens,omitempty"`
+	ResponseMime    string         `json:"responseMimeType,omitempty"`
+	ResponseSchema  map[string]any `json:"responseSchema,omitempty"`
+	ThinkingConfig  *gemThinking   `json:"thinkingConfig,omitempty"`
+}
+
+type gemThinking struct {
+	ThinkingBudget  int  `json:"thinkingBudget"`
+	IncludeThoughts bool `json:"includeThoughts,omitempty"`
 }
 
 func (m *geminiModel) Generate(ctx context.Context, req Request) (*Response, error) {
@@ -251,20 +259,16 @@ func (m *geminiModel) request(req Request) gemRequest {
 	}
 	if req.Schema != nil {
 		tc.FunctionCallingConfig.Mode = "NONE"
-		out.GenerationConfig = &struct {
-			Temperature     *float64       `json:"temperature,omitempty"`
-			MaxOutputTokens int            `json:"maxOutputTokens,omitempty"`
-			ResponseMime    string         `json:"responseMimeType,omitempty"`
-			ResponseSchema  map[string]any `json:"responseSchema,omitempty"`
-		}{Temperature: req.Temperature, MaxOutputTokens: req.MaxTokens,
+		out.GenerationConfig = &gemGenConfig{Temperature: req.Temperature, MaxOutputTokens: req.MaxTokens,
 			ResponseMime: "application/json", ResponseSchema: geminiSchema(req.Schema)}
 	} else if req.Temperature != nil || req.MaxTokens > 0 {
-		out.GenerationConfig = &struct {
-			Temperature     *float64       `json:"temperature,omitempty"`
-			MaxOutputTokens int            `json:"maxOutputTokens,omitempty"`
-			ResponseMime    string         `json:"responseMimeType,omitempty"`
-			ResponseSchema  map[string]any `json:"responseSchema,omitempty"`
-		}{Temperature: req.Temperature, MaxOutputTokens: req.MaxTokens}
+		out.GenerationConfig = &gemGenConfig{Temperature: req.Temperature, MaxOutputTokens: req.MaxTokens}
+	}
+	if b := req.Reasoning.budget(); b > 0 {
+		if out.GenerationConfig == nil {
+			out.GenerationConfig = &gemGenConfig{}
+		}
+		out.GenerationConfig.ThinkingConfig = &gemThinking{ThinkingBudget: b, IncludeThoughts: req.Reasoning.Include}
 	}
 	if tc.FunctionCallingConfig.Mode != "" {
 		out.ToolConfig = tc

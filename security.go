@@ -205,3 +205,4 @@ func (noEnv) Exec(context.Context, execRequest) (execResult, error) {
 func (noEnv) ReadFile(context.Context, fsRequest) ([]byte, error) { return nil, errNoEnv }
 func (noEnv) WriteFile(context.Context, fsRequest) error          { return errNoEnv }
 func (noEnv) Secret(context.Context, string) (string, error)      { return "", errNoEnv }
+func (noEnv) sandboxed() bool                                     { return false }

@@ -137,60 +137,6 @@ func (r *Retry) wait(attempt int) {
 	time.Sleep(d)
 }
 
-// ContextConfig keeps the prompt within a token budget. It is off by
-// default. Summarize, when set, turns dropped messages into replacements.
-type ContextConfig struct {
-	MaxTokens int
-	KeepLast  int
-	Summarize func(ctx context.Context, dropped []Message) ([]Message, error)
-}
-
-// estimateTokens is a coarse four-characters-per-token estimate.
-func estimateTokens(msgs []Message) int {
-	n := 0
-	for _, m := range msgs {
-		n += len(m.Content)/4 + 8
-		for _, c := range m.ToolCalls {
-			n += len(c.Name)/4 + len(jsonString(c.Args))/4
-		}
-	}
-	return n
-}
-
-// trimContext drops old messages while keeping tool pairs valid.
-func trimContext(ctx context.Context, msgs []Message, cfg *ContextConfig) ([]Message, error) {
-	if cfg == nil || cfg.MaxTokens <= 0 || estimateTokens(msgs) <= cfg.MaxTokens {
-		return msgs, nil
-	}
-	keep := cfg.KeepLast
-	if keep <= 0 {
-		keep = 20
-	}
-	start := len(msgs) - keep
-	if start < 0 {
-		start = 0
-	}
-	for start < len(msgs) && msgs[start].Role == RoleTool {
-		start++
-	}
-	for start < len(msgs) && msgs[start].Role == RoleAssistant {
-		start++
-	}
-	if start <= 0 {
-		return msgs, nil
-	}
-	kept := append([]Message(nil), msgs[start:]...)
-	if cfg.Summarize != nil {
-		dropped := append([]Message(nil), msgs[:start]...)
-		repl, err := cfg.Summarize(ctx, dropped)
-		if err != nil {
-			return nil, err
-		}
-		kept = append(append([]Message(nil), repl...), kept...)
-	}
-	return kept, nil
-}
-
 // Chain combines hooks into one value for Config.Hooks, e.g.
 //
 //	Hooks: kritrim.Chain(guard.PII("email"), memory.Inject(store, 5), trace.OTel(cfg))

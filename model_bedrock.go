@@ -137,6 +137,7 @@ type brRequest struct {
 		Tools      []brToolSpec `json:"tools"`
 		ToolChoice any          `json:"toolChoice,omitempty"`
 	} `json:"toolConfig,omitempty"`
+	AdditionalModelRequestFields map[string]any `json:"additionalModelRequestFields,omitempty"`
 }
 
 type brResponse struct {
@@ -157,6 +158,17 @@ func (m *bedrockModel) request(req Request) brRequest {
 	}
 	for _, msg := range req.Messages {
 		out.Messages = appendBR(out.Messages, msg)
+	}
+	if b := req.Reasoning.budget(); b > 0 {
+		out.AdditionalModelRequestFields = map[string]any{
+			"reasoning_config": map[string]any{"type": "enabled", "budget_tokens": b},
+		}
+		// Converse rejects a temperature while reasoning is enabled, and
+		// the reply needs room beyond the thinking budget.
+		req.Temperature = nil
+		if req.MaxTokens > 0 && req.MaxTokens <= b {
+			req.MaxTokens = b + 4096
+		}
 	}
 	if req.MaxTokens > 0 || req.Temperature != nil {
 		out.InferenceConfig = &struct {

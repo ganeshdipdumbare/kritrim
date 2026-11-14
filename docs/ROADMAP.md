@@ -105,8 +105,8 @@ Shipped:
 - Sealed durable approval test across a box restart.
 
 **Still open:** E2B/microsandbox/Firecracker/Tensorlake sandbox adapters, A2A
-file parts, Cedar-style authorization, python vended tools, voice/bidi, evals
-CLI run/generate and remote traces.
+file parts, evals CLI run/generate and remote traces. (Authorization and
+python tools shipped in v0.9; voice/bidi is a non-goal.)
 
 ## v0.7 — parity pass (shipped)
 
@@ -180,6 +180,57 @@ sealed capability calls; JSON Schema constraints, combinators and local `$ref`.
 **Still open:** pluggable webhook dedupe store for multi-instance
 deployments; richer hooks (retry requests, tool swap, end turn).
 
+## v0.9 — parity pass 2 (shipped)
+
+A pass over the gaps between kritrim and the Strands Harness SDK, taking
+the capabilities that fit "one way per task, security on by default" and
+leaving the rest in Non-goals below.
+
+- **Reasoning:** `Config.Reasoning{Effort, Budget, Include}` maps onto
+  Anthropic extended thinking, OpenAI `reasoning_effort`, Responses
+  `reasoning.effort`, Gemini `thinkingConfig` and Bedrock
+  `reasoning_config`. Thinking tokens are budgeted as output tokens, and
+  Anthropic thinking blocks are kept on the assistant message
+  (`Message.Reasoning`, `Message.ReasoningSig`) and replayed with their
+  signature, which the provider requires before it will accept a tool
+  result.
+- **Routing:** `Config.Route` picks the model per run from the prompt and
+  the context. `Fallback` still applies to what it chose, and the audit log
+  records the model the run used.
+- **Context strategies:** `ContextConfig.Strategy` with `KeepWindow`
+  (default), `Summarize(fn)` and `SummarizeWith(model, instructions)`, plus
+  the exported `EstimateTokens`. Replaces `ContextConfig.Summarize`, which
+  is now `Strategy: kritrim.Summarize(fn)`.
+- **Trusted message history:** `SignedSessions(store, key)` HMACs stored
+  conversations and refuses an edited or unsigned one (`ErrSessionTampered`).
+- **Authorization (`authz/`):** Cedar-semantics policies over the run's
+  identity and the call's arguments — `Permit`/`Forbid`, `For`, `By`,
+  `When`, `Because`, explicit-deny precedence, default deny, and a denial
+  that explains the rule it fell outside.
+- **Vended tools:** `WebFetch` (HTML to text), `Todos` (plan in session
+  state, one item in progress), `Python` (sandbox-required, code on stdin).
+  `env.sandboxed()` lets a tool refuse to run on the host.
+- **Goal loop:** `plugin.GoalLoop` re-prompts one thread until a goal check
+  passes, returning `ErrGoalNotMet` with the last result; `plugin.Goal`
+  keeps the goal in the system prompt.
+- **Multi-agent as tools:** `Graph.AsTool` and `Swarm.AsTool`.
+- **Evals:** `Judge(criterion, model)` over twelve exported rubrics where
+  1.0 is always good; judges see the trajectory; `ToolParameters`;
+  `Chaos` (counted, reproducible tool failures), `Resilient` and
+  `FailedTools`.
+
+**Gate:** per-provider reasoning wire-format tests, signature replay,
+reasoning-vs-budget refusal; routing; strategy, estimation and
+valid-conversation tests; six tamper cases, wrong key, moved thread and a
+run refusing an edited history; authorization matrix, panicking condition,
+per-run identity; web-fetch HTML/JSON/404/off-allowlist, todos state round
+trip, python sandbox refusal; goal-loop retry, give-up, interrupt;
+graph/swarm as tools; criteria, trajectory prompt, chaos determinism.
+
+**Still open:** provider guardrails (Bedrock `ApplyGuardrail`),
+embedding-backed memory search, richer hooks (retry requests, tool swap,
+end turn), evals CLI `run`/`generate`, pluggable webhook dedupe store.
+
 ## v1.0 — freeze
 
 API stability, migration guide, benchmarks, docs site, signed releases.
@@ -189,3 +240,18 @@ API stability, migration guide, benchmarks, docs site, signed releases.
 Voice/bidi, hosted evaluation platform, deploy guides/infrastructure,
 experimental JSON agent config, a separate Workflow primitive. They are
 separate products or just Go code.
+
+Considered during the v0.9 parity pass and deliberately left out:
+
+- **Workflow primitive.** A graph with conditional edges and shared state
+  already expresses a DAG of steps. A second primitive would be a second
+  way to say the same thing.
+- **Deployment guides.** A kritrim agent is a Go binary. Lambda, Fargate,
+  EKS and Kubernetes guides belong to whoever runs the binary.
+- **Declarative agent config.** A `Config` literal is already the
+  declaration, and it type-checks.
+- **Voice/bidi.** A different transport and a different loop; a separate
+  product, not a flag on this one.
+- **A provider catalogue.** `Compatible(provider, baseURL, model)` covers
+  any OpenAI-shaped endpoint, which is most of them. Named helpers exist
+  only where the wire format differs.

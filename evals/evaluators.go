@@ -182,6 +182,9 @@ type JudgeConfig struct {
 	Threshold float64
 	// System overrides the judge system prompt.
 	System string
+	// Name labels the score. Default "llm_judge". Set it when a report
+	// holds more than one judge, so the columns can be told apart.
+	Name string
 }
 
 // LLMJudge scores the output with a model against a rubric.
@@ -189,7 +192,12 @@ func LLMJudge(cfg JudgeConfig) Evaluator { return judgeEval{cfg: cfg} }
 
 type judgeEval struct{ cfg JudgeConfig }
 
-func (judgeEval) Name() string { return "llm_judge" }
+func (e judgeEval) Name() string {
+	if e.cfg.Name != "" {
+		return e.cfg.Name
+	}
+	return "llm_judge"
+}
 
 func (e judgeEval) Evaluate(ctx context.Context, r Result) (Score, error) {
 	if e.cfg.Model == nil {
@@ -203,8 +211,17 @@ func (e judgeEval) Evaluate(ctx context.Context, r Result) (Score, error) {
 	if system == "" {
 		system = "You grade an AI assistant's answer against a rubric. Be strict and concise."
 	}
+	name := e.cfg.Name
+	if name == "" {
+		name = "llm_judge"
+	}
 	prompt := fmt.Sprintf("Rubric:\n%s\n\nUser input:\n%s\n\nExpected (may be empty):\n%s\n\nAnswer:\n%s",
 		e.cfg.Rubric, r.Case.Input, r.Case.Expected, r.Output)
+	// What the agent actually did, so a rubric can grade grounding and
+	// goal completion rather than only the final wording.
+	if tr := trajectory(r); tr != "" {
+		prompt += "\n\nWhat the agent did:\n" + tr
+	}
 	schema := kritrim.SchemaOf(judgment{})
 	resp, err := e.cfg.Model.Generate(ctx, kritrim.Request{
 		System:     system,
@@ -218,7 +235,7 @@ func (e judgeEval) Evaluate(ctx context.Context, r Result) (Score, error) {
 	}
 	var v judgment
 	if err := json.Unmarshal([]byte(stripFence(resp.Text)), &v); err != nil {
-		return Score{Evaluator: "llm_judge", Pass: false, Reason: "unparseable judge reply"}, nil
+		return Score{Evaluator: name, Pass: false, Reason: "unparseable judge reply"}, nil
 	}
 	if v.Score < 0 {
 		v.Score = 0
@@ -226,7 +243,7 @@ func (e judgeEval) Evaluate(ctx context.Context, r Result) (Score, error) {
 	if v.Score > 1 {
 		v.Score = 1
 	}
-	return Score{Evaluator: "llm_judge", Value: v.Score, Pass: v.Score >= threshold, Reason: v.Reason}, nil
+	return Score{Evaluator: name, Value: v.Score, Pass: v.Score >= threshold, Reason: v.Reason}, nil
 }
 
 type judgment struct {

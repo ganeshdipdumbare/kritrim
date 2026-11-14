@@ -64,6 +64,12 @@ func (a *Agent) run(ctx context.Context, prompt string, emit func(Event), opts .
 		emit = o.onEvent
 	}
 	a.identity(&o)
+	o.model = a.model
+	if a.cfg.Route != nil {
+		if m := a.cfg.Route(ctx, prompt); m != nil {
+			o.model = m
+		}
+	}
 	if o.output != nil && reflect.TypeOf(o.output).Kind() != reflect.Pointer {
 		return nil, errors.New("kritrim: Output needs a pointer")
 	}
@@ -210,7 +216,7 @@ func (a *Agent) loop(ctx context.Context, sess *Session, msgs []Message, ps *Pau
 		}
 		emit(Event{Type: "step_start", Step: step})
 		req := Request{
-			Model:       a.Model(),
+			Model:       modelName(o.model),
 			System:      a.cfg.Instructions,
 			Tools:       a.cfg.Tools,
 			MaxTokens:   a.cfg.maxTokens(),
@@ -219,6 +225,7 @@ func (a *Agent) loop(ctx context.Context, sess *Session, msgs []Message, ps *Pau
 			Schema:      schema,
 			SchemaName:  "output",
 			Cache:       a.cfg.PromptCache,
+			Reasoning:   a.cfg.Reasoning,
 		}
 		req.Messages, err = trimContext(ctx, msgs, a.cfg.Context)
 		if err != nil {
@@ -230,9 +237,9 @@ func (a *Agent) loop(ctx context.Context, sess *Session, msgs []Message, ps *Pau
 		if err := fitBudget(&req, usage.Total(), a.cfg.Limits.Tokens); err != nil {
 			return nil, err
 		}
-		resp, err := a.modelStream(ctx, &req, emit)
+		resp, err := a.modelStream(ctx, o, &req, emit)
 		if err != nil {
-			a.audit(ctx, o, "model", a.Model(), "error: "+err.Error())
+			a.audit(ctx, o, "model", modelName(o.model), "error: "+err.Error())
 			return nil, err
 		}
 		a.cfg.Hooks.afterModel(ctx, &req, resp)
@@ -248,7 +255,8 @@ func (a *Agent) loop(ctx context.Context, sess *Session, msgs []Message, ps *Pau
 				resp.ToolCalls[i].ID = "call_" + resp.ToolCalls[i].Name + "_" + newID()[:6]
 			}
 		}
-		assistant := Message{Role: RoleAssistant, Content: resp.Text, ToolCalls: resp.ToolCalls}
+		assistant := Message{Role: RoleAssistant, Content: resp.Text, ToolCalls: resp.ToolCalls,
+			Reasoning: resp.Reasoning, ReasoningSig: resp.ReasoningSig}
 		msgs = append(msgs, assistant)
 		stepRec := Step{Text: resp.Text, ToolCalls: resp.ToolCalls, Usage: resp.Usage}
 
@@ -301,7 +309,7 @@ func (a *Agent) loop(ctx context.Context, sess *Session, msgs []Message, ps *Pau
 		if derr := decodeOutput(o.output, text, wrapped); derr != nil {
 			fix := fmt.Sprintf("Your reply was not valid JSON for the required schema (%v). Reply with only the JSON object.", derr)
 			req := Request{
-				Model:       a.Model(),
+				Model:       modelName(o.model),
 				System:      a.cfg.Instructions,
 				Messages:    append(append([]Message(nil), msgs...), Message{Role: RoleUser, Content: fix}),
 				MaxTokens:   a.cfg.maxTokens(),
@@ -314,7 +322,7 @@ func (a *Agent) loop(ctx context.Context, sess *Session, msgs []Message, ps *Pau
 			rerr := fitBudget(&req, usage.Total(), a.cfg.Limits.Tokens)
 			var resp *Response
 			if rerr == nil {
-				resp, rerr = a.modelGenerate(ctx, &req)
+				resp, rerr = a.modelGenerate(ctx, o, &req)
 			}
 			if rerr == nil {
 				usage = usage.Add(resp.Usage)
@@ -487,9 +495,10 @@ func (a *Agent) executeCall(ctx context.Context, o runOptions, call ToolCall, em
 	return res, nil
 }
 
-func (a *Agent) modelStream(ctx context.Context, req *Request, emit func(Event)) (*Response, error) {
+func (a *Agent) modelStream(ctx context.Context, o runOptions, req *Request, emit func(Event)) (*Response, error) {
 	var last error
-	for i, m := range a.models() {
+	models := a.models(o)
+	for i, m := range models {
 		emitted := false
 		for attempt := 0; ; attempt++ {
 			resp, err := m.Stream(ctx, *req, func(d Delta) {
@@ -514,16 +523,16 @@ func (a *Agent) modelStream(ctx context.Context, req *Request, emit func(Event))
 			logf(a.cfg, "model retry %d after %v", attempt+1, err)
 			a.cfg.Retry.wait(attempt)
 		}
-		if i < len(a.models())-1 {
+		if i < len(models)-1 {
 			logf(a.cfg, "falling back to the next model after %v", last)
 		}
 	}
 	return nil, last
 }
 
-func (a *Agent) modelGenerate(ctx context.Context, req *Request) (*Response, error) {
+func (a *Agent) modelGenerate(ctx context.Context, o runOptions, req *Request) (*Response, error) {
 	var last error
-	for _, m := range a.models() {
+	for _, m := range a.models(o) {
 		for attempt := 0; ; attempt++ {
 			resp, err := m.Generate(ctx, *req)
 			if err == nil {
@@ -543,8 +552,13 @@ func (a *Agent) modelGenerate(ctx context.Context, req *Request) (*Response, err
 	return nil, last
 }
 
-func (a *Agent) models() []Model {
-	out := []Model{a.model}
+// models is the routed model first, then the fallbacks.
+func (a *Agent) models(o runOptions) []Model {
+	first := o.model
+	if first == nil {
+		first = a.model
+	}
+	out := []Model{first}
 	for _, m := range a.cfg.Fallback {
 		if m != nil {
 			out = append(out, m)
@@ -599,7 +613,7 @@ func (a *Agent) audit(ctx context.Context, o runOptions, kind, name, detail stri
 }
 
 func (a *Agent) auditModel(ctx context.Context, o runOptions, total Usage, resp *Response) {
-	a.audit(ctx, o, "model", a.Model(), fmt.Sprintf("stop=%s in=%d out=%d total=%d", resp.Stop, resp.Usage.In, resp.Usage.Out, total.Total()))
+	a.audit(ctx, o, "model", modelName(o.model), fmt.Sprintf("stop=%s in=%d out=%d total=%d", resp.Stop, resp.Usage.In, resp.Usage.Out, total.Total()))
 }
 
 func (c Config) maxTokens() int { return c.MaxOutputTokens }
@@ -617,6 +631,11 @@ func fitBudget(req *Request, used, limit int) error {
 		return fmt.Errorf("kritrim: token budget %d exceeded (%d used, about %d needed for the input)", limit, used, in)
 	}
 	out := left - in
+	// Reasoning tokens are output tokens: refuse rather than silently cap
+	// the output below the thinking budget, which providers reject.
+	if b := req.Reasoning.budget(); b > 0 && out < b+512 {
+		return fmt.Errorf("kritrim: token budget %d exceeded (%d used, about %d for the input, %d reserved for reasoning)", limit, used, in, b)
+	}
 	// Only cap an unset output limit when it is small: provider defaults
 	// are lower than most budgets, and huge values are rejected.
 	if (req.MaxTokens > 0 && req.MaxTokens > out) || (req.MaxTokens <= 0 && out < 4096) {
@@ -627,7 +646,7 @@ func fitBudget(req *Request, used, limit int) error {
 
 // estimateRequest is a coarse input-token estimate for a request.
 func estimateRequest(req *Request) int {
-	n := estimateTokens(req.Messages) + len(req.System)/4
+	n := EstimateTokens(req.Messages) + len(req.System)/4
 	for _, t := range req.Tools {
 		n += (len(t.Name) + len(t.Description) + len(jsonString(t.Schema))) / 4
 	}

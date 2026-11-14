@@ -30,6 +30,9 @@ type Request struct {
 	// Cache asks providers that support it to cache the system prompt and
 	// tools (Anthropic cache_control).
 	Cache bool
+	// Reasoning asks the model to think before answering. Providers that
+	// do not support it ignore the field.
+	Reasoning *Reasoning
 }
 
 // Delta is a partial model output.
@@ -42,9 +45,12 @@ type Delta struct {
 type Response struct {
 	Text      string
 	Reasoning string
-	ToolCalls []ToolCall
-	Usage     Usage
-	Stop      string // stop | tool_calls | length
+	// ReasoningSig is the provider's signature over Reasoning, replayed
+	// with the thinking block on the next call.
+	ReasoningSig string
+	ToolCalls    []ToolCall
+	Usage        Usage
+	Stop         string // stop | tool_calls | length
 }
 
 // ModelConfig configures a provider. The zero value reads the provider's

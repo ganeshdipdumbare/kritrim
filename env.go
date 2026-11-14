@@ -27,6 +27,9 @@ type env interface {
 	ReadFile(ctx context.Context, req fsRequest) ([]byte, error)
 	WriteFile(ctx context.Context, req fsRequest) error
 	Secret(ctx context.Context, name string) (string, error)
+	// sandboxed reports whether Exec and the file calls land somewhere
+	// other than the host: a Config.Sandbox machine, or a sealed box.
+	sandboxed() bool
 }
 
 type httpRequest struct {
@@ -469,3 +472,7 @@ func childEnv(extra []string) []string {
 
 var inheritedEnv = []string{"PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "LC_ALL", "LC_CTYPE",
 	"TZ", "TERM", "TMPDIR", "TMP", "TEMP", "SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "COMSPEC", "PATHEXT"}
+
+// sandboxed reports whether this agent runs its commands and file calls in
+// a sandbox machine rather than on the host.
+func (e *hostEnv) sandboxed() bool { return e.a.machine != nil }

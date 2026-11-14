@@ -66,13 +66,20 @@ kritrim.Approve() / Reject(why) / Edit(args) / Respond(text) / Pause()
 kritrim.MemorySessions() SessionStore
 kritrim.FileSessions(dir) SessionStore
 kritrim.SQLSessions(db, SQLConfig) (SessionStore, error)
+kritrim.SignedSessions(store, key) SessionStore
 kritrim.AuditFile(path, ...AuditOption) AuditSink
 kritrim.AuditKey(key) AuditOption
 kritrim.VerifyAudit(path, ...AuditOption) error
 kritrim.Chain(...Hooks) Hooks
 
+kritrim.KeepWindow() Strategy
+kritrim.Summarize(fn) Strategy
+kritrim.SummarizeWith(model, instructions) Strategy
+kritrim.EstimateTokens(msgs) int
+
 kritrim.Time() Tool
 kritrim.HTTP(HTTPConfig) Tool
+kritrim.WebFetch(WebFetchConfig) Tool
 kritrim.WebSearch(WebSearchConfig) Tool
 kritrim.Shell(ShellConfig) Tool
 kritrim.Files(FilesConfig) Tool
@@ -82,6 +89,8 @@ kritrim.EditFile(EditConfig) Tool
 kritrim.Sleep(max) Tool
 kritrim.Stop() Tool
 kritrim.Notebook() Tool
+kritrim.Todos() Tool
+kritrim.Python(PythonConfig) Tool
 kritrim.AskUser() Tool
 
 kritrim.Local() Sandbox
@@ -114,8 +123,42 @@ kritrim.Mock(turns...)                     // offline
 Each constructor takes an optional `ModelConfig{APIKey, BaseURL, Headers,
 Client, Timeout, JSONMode}`. Streaming, tool calls, images, usage and native
 structured output are implemented for OpenAI-compatible, Anthropic and Gemini.
-`Config.Fallback` tries the next model when a call keeps failing with a
-retryable error.
+
+### Reasoning
+
+```go
+Reasoning: &kritrim.Reasoning{Effort: "high"} // low | medium | high
+```
+
+One setting, five providers: `Effort` becomes Anthropic extended thinking,
+OpenAI reasoning effort, Gemini `thinkingConfig` and Bedrock
+`reasoning_config`. `Budget` sets the thinking-token allowance exactly
+(effort defaults: 1024 / 4096 / 16384); `Include: true` streams the thinking
+back as `reasoning` events where the provider returns it.
+
+Thinking tokens are output tokens. They count against `MaxOutputTokens` and
+the run's budget, so a budget that cannot hold the thinking allowance is
+refused before the call rather than capped into a provider error. Anthropic
+needs its thinking blocks replayed with their signature on the next call, so
+kritrim keeps them on the assistant message and sends them back — without
+that, a reasoning model with tools is rejected mid-conversation.
+
+### Routing and fallback
+
+```go
+Model: small,
+Route: func(ctx context.Context, prompt string) kritrim.Model {
+    if len(prompt) > 500 { return large }
+    return nil // nil means Config.Model
+},
+Fallback: []kritrim.Model{backup},
+```
+
+`Route` decides up front, per run, from the prompt and the context; it is
+how a cheap model takes the easy questions. `Fallback` reacts after the
+fact, trying the next model when a call keeps failing with a retryable
+error. They compose: fallbacks apply to whatever `Route` chose, and the
+audit log records the model the run actually used.
 
 ## Tools
 
@@ -138,8 +181,18 @@ required, enum/const, lengths, pattern, ranges, combinators and local
 `$ref`; a keyword that cannot be enforced fails the call). Mark a tool `Risky` to require approval. `ToolConcurrency > 1` runs the
 model's parallel tool calls concurrently (risky tools stay sequential).
 `Agent.CallTool` runs one directly. Built-in tools include time, HTTP, web
-search, shell, files, line-numbered read, write, edit, sleep, stop, notebook
-and ask_user.
+fetch, web search, shell, files, line-numbered read, write, edit, sleep,
+stop, notebook, todos, python and ask_user.
+
+`WebFetch` is `HTTP` for reading: one GET, and HTML turned into text instead
+of markup, so a page does not spend the context window on tags and scripts.
+`Todos` keeps the agent's plan in session state, where it survives a pause
+and a restart, and refuses a list with two items in progress. `Python` runs
+model-written code and is the one built-in whose argument cannot be checked
+— an allowlist constrains a command, and Python is a language — so it
+requires `Config.Sandbox` (or sealed mode) and refuses to run on the host
+unless you pass `AllowUnsafeHost`. The code goes to the interpreter on
+stdin: no shell, nothing to quote.
 
 ## Streaming
 
@@ -232,6 +285,24 @@ a, _ := kritrim.New(kritrim.Config{
 })
 ```
 
+### Context
+
+```go
+Context: &kritrim.ContextConfig{
+    MaxTokens: 60_000,
+    KeepLast:  30,
+    Strategy:  kritrim.SummarizeWith(small, ""), // or KeepWindow(), Summarize(fn)
+},
+```
+
+Nothing happens while the history fits. Over `MaxTokens` — measured with
+the same exported `kritrim.EstimateTokens` the budget uses — the strategy
+decides what the call sends. `KeepWindow` is the default and makes no model
+call; `SummarizeWith` pays for one and keeps the gist; `Summarize(fn)` and
+the `Strategy` interface take your own. A strategy only changes what is
+sent: the session keeps every message, and a cut never orphans a tool
+result.
+
 Hooks run after the built-in security checks; they can mutate requests,
 responses and tool results but cannot grant a capability policy denied.
 Combine hook sets with `kritrim.Chain`; they run in order, so list guards
@@ -277,6 +348,15 @@ kritrim.StateFrom(ctx).Set("seen", true)
   With `AuditKey(key)` the chain is HMAC-SHA256 and a signed head file detects
   truncation, so rewriting the log needs the key. A sink verifies an existing
   log before appending and refuses one it cannot verify.
+- **Trusted message history.** `SignedSessions(store, key)` HMACs every
+  stored conversation and refuses one that was edited — or one that carries
+  no signature at all. Message history is an instruction channel: an agent
+  replays whatever the store returns, so write access to a shared Redis or
+  a mounted volume is write access to the user's instructions. The
+  signature covers content, not freshness: it catches an edit, not a
+  deletion or a rollback to an older signed copy.
+- **Authorization.** `authz` answers the question `Config.Tools` cannot:
+  not "may this agent refund" but "may *this caller* refund *this much*".
 - **PII hooks.** `guard.PII("email", "credit_card")` redacts prompts, replies
   and tool results.
 - **Tracing.** `trace.JSON(w)` writes one line per run/model/tool event;
@@ -284,6 +364,37 @@ kritrim.StateFrom(ctx).Set("seen", true)
   exports metrics and logs.
 - **User Go tools are your code.** The broker governs built-in tools; put
   untrusted work in a sandbox.
+
+## Authorization
+
+```go
+policy, err := authz.New(
+    authz.Permit("*").For("admin"),
+    authz.Permit("current_time", "web_*"),
+    authz.Permit("refund").For("support").
+        When(func(r authz.Request) bool { return r.Number("amount") <= 100 }).
+        Because("support may refund up to 100 euros; ask a manager for more"),
+    authz.Forbid("shell"),
+)
+a, _ := kritrim.New(kritrim.Config{Model: model, Tools: tools, Hooks: policy.Hooks()})
+a.Run(ctx, prompt, kritrim.User("u-7"), kritrim.Roles("support"))
+```
+
+Cedar's three rules: an explicit `Forbid` beats every `Permit`, one matching
+`Permit` is enough, and anything unmatched is denied. Default deny is the
+point — adding a tool to an agent does not quietly widen what every caller
+can reach, and a typo in a policy fails closed.
+
+Identity comes from the run (`kritrim.User`, `kritrim.Roles`), so one agent
+serves many callers. Conditions see the arguments the model chose, which is
+where ceilings and path prefixes belong. A denial is a message to the model,
+not an error: the run continues and the model explains the limit, using the
+`Because` text — a call nothing permitted is told the rules for that tool,
+so a caller who went over a ceiling learns what it was.
+
+Policy runs after kritrim's own checks, so it can only narrow what an agent
+may do: it cannot grant `Shell` a command its allowlist lacks, and it cannot
+waive an approval.
 
 ## Sandboxes
 
@@ -401,8 +512,10 @@ s, _ := multiagent.NewSwarm(
 res, _ = s.Run(ctx, "draft the launch post")
 ```
 
-Swarm members get `handoff_to_<name>` tools. Workflows are plain Go; there is
-no extra primitive.
+Swarm members get `handoff_to_<name>` tools. `Graph.AsTool` and
+`Swarm.AsTool` hand a whole composition to another agent as one tool, the
+way `Agent.AsTool` hands over one agent; the caller's model sees a sentence
+and never the nodes. Workflows are plain Go; there is no extra primitive.
 
 ## A2A
 
@@ -454,7 +567,25 @@ fmt.Print(report.Summary())
 ```
 
 Deterministic evaluators, tool-trajectory checks, token/latency budgets, an
-LLM judge, detectors, a JSON/Markdown report and a disk cache. `evals.RunRedTeam`
+LLM judge, detectors, a JSON/Markdown report and a disk cache.
+
+`evals.Judge(criterion, model)` scores a built-in rubric — `Faithful`,
+`Correct`, `Relevant`, `Coherent`, `Concise`, `Helpful`, `Harmless`,
+`Unbiased`, `Answered`, `Obedient`, `Achieved`, `Recovered` — where 1.0 is
+always good, including the safety ones. The criteria are exported rubric
+strings, so you can read what is being asked and copy one into
+`JudgeConfig.Rubric` to adapt it. Judges see the trajectory, not just the
+final wording, so a rubric can grade grounding and completion rather than
+confidence. `ToolParameters(tool, check)` checks the arguments a tool was
+called with — the half of tool use a trajectory check misses.
+
+`evals.Chaos(ChaosConfig{Fail: map[string]int{"http_request": 1}})` makes
+tools fail on purpose, because a suite run on a good day only proves the
+agent works on a good day. The failures are counted, not random: the same
+case fails the same call every time, so a red result is reproducible.
+`Resilient()` is the deterministic half of recovery testing — it finished
+despite a failure — and `Judge(Recovered, model)` asks whether what it did
+instead made sense. `evals.RunRedTeam`
 runs prompt-injection, exfiltration and destructive-tool probes;
 `evals.GenerateCases` proposes cases from an agent description and
 `evals.Simulate` runs a model-played multi-turn user. The CLI renders and
@@ -481,6 +612,27 @@ a, _ := kritrim.New(kritrim.Config{
 `read_offloaded` tool. `plugin.Steer` adds just-in-time guidance to the next
 model call. `guard.Deny(pattern, reason)` blocks matching prompts;
 `guard.PII(...)` redacts personal data.
+
+`plugin.GoalLoop` closes the gap between a model that stops and a job that
+is done:
+
+```go
+res, err := plugin.GoalLoop(ctx, agent, plugin.GoalConfig{
+    Goal:   "go build ./... exits zero",
+    Thread: "fix-build",
+    Done: func(ctx context.Context, res *kritrim.Result) (bool, error) {
+        return exec.Command("go", "build", "./...").Run() == nil, nil
+    },
+})
+```
+
+One `Run` ends when the model stops calling tools, which is its judgement
+and not a fact. `GoalLoop` re-prompts the same thread while `Done` says
+otherwise, up to `MaxAttempts` (default 5), and returns `ErrGoalNotMet`
+with the last result when the attempts run out. Check the world, not the
+transcript: a model that says the tests pass has only said so. A run that
+pauses for an approval comes back as it is — a human has to decide before
+anything else can happen.
 
 ## Triggers
 
@@ -517,6 +669,8 @@ before each model call. No vector database.
 ```bash
 go run ./examples/quickstart
 go run ./examples/tools
+go run ./examples/reasoning   # reasoning, routing, context compaction
+go run ./examples/policy      # authorization, signed history, goal loop
 go run ./examples/full
 go run ./examples/sealed
 go run ./examples/a2a
@@ -538,12 +692,16 @@ schema and network-guard code.
 
 ## Status
 
-Released: core loop, providers (OpenAI-compatible, Anthropic, Gemini, Bedrock),
-tools (parallel and direct), sessions (memory/file/SQL), durable approvals,
-hooks, retry, context, state, fork/cancel/idempotency, audit, PII, tracing
-(JSON + OTLP), Docker/SSH/Local sandboxes (attach + streamed exec), sealed
-mode (host-enforced approvals, identity and budget), MCP, A2A, evals, graph/swarm, triggers, memory, skills, plugins, notebook.
+Released: core loop, providers (OpenAI-compatible, Anthropic, Gemini,
+Bedrock) with reasoning and routing, tools (parallel and direct), sessions
+(memory/file/SQL/signed), durable approvals, hooks, retry, context
+strategies, state, fork/cancel/idempotency, audit, authorization, PII,
+tracing (JSON + OTLP), Docker/SSH/Local sandboxes (attach + streamed exec),
+sealed mode (host-enforced approvals, identity and budget), MCP, A2A, evals
+(criteria, chaos), graph/swarm, triggers, memory, skills, plugins, notebook,
+todos, python.
 
 Not shipped yet: E2B/microsandbox/Firecracker/Tensorlake sandbox adapters (the
-conformance kit and interface are ready), A2A file parts, Cedar-style
-authorization, python tools, voice. See [`docs/ROADMAP.md`](docs/ROADMAP.md).
+conformance kit and interface are ready), A2A file parts, provider
+guardrails, embedding-backed memory search. See
+[`docs/ROADMAP.md`](docs/ROADMAP.md).

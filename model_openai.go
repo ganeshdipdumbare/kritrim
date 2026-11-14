@@ -94,15 +94,16 @@ type oaTool struct {
 }
 
 type oaRequest struct {
-	Model          string   `json:"model"`
-	Messages       []oaMsg  `json:"messages"`
-	Tools          []oaTool `json:"tools,omitempty"`
-	ToolChoice     any      `json:"tool_choice,omitempty"`
-	Temperature    *float64 `json:"temperature,omitempty"`
-	MaxTokens      int      `json:"max_tokens,omitempty"`
-	ResponseFormat any      `json:"response_format,omitempty"`
-	Stream         bool     `json:"stream,omitempty"`
-	StreamOptions  any      `json:"stream_options,omitempty"`
+	Model           string   `json:"model"`
+	Messages        []oaMsg  `json:"messages"`
+	Tools           []oaTool `json:"tools,omitempty"`
+	ToolChoice      any      `json:"tool_choice,omitempty"`
+	Temperature     *float64 `json:"temperature,omitempty"`
+	MaxTokens       int      `json:"max_tokens,omitempty"`
+	ResponseFormat  any      `json:"response_format,omitempty"`
+	ReasoningEffort string   `json:"reasoning_effort,omitempty"`
+	Stream          bool     `json:"stream,omitempty"`
+	StreamOptions   any      `json:"stream_options,omitempty"`
 }
 
 func (m *openaiModel) Generate(ctx context.Context, req Request) (*Response, error) {
@@ -252,6 +253,10 @@ func stopReason(s string) string {
 
 func (m *openaiModel) request(req Request, stream bool) oaRequest {
 	out := oaRequest{Model: m.name, Temperature: req.Temperature, MaxTokens: req.MaxTokens, Stream: stream}
+	if e := req.Reasoning.effort(); e != "" {
+		// Reasoning models take an effort word and reject a temperature.
+		out.ReasoningEffort, out.Temperature = e, nil
+	}
 	if stream {
 		out.StreamOptions = map[string]any{"include_usage": true}
 	}

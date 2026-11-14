@@ -25,6 +25,8 @@ type Session struct {
 	Paused   *PausedStep    `json:"paused,omitempty"`
 	Version  int64          `json:"version"`
 	Updated  time.Time      `json:"updated"`
+	// Sig is set by SignedSessions and is not part of what it signs.
+	Sig string `json:"sig,omitempty"`
 }
 
 // SessionStore loads and saves conversations. Save is compare-and-swap on
