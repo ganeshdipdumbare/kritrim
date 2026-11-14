@@ -95,6 +95,9 @@ func newSealed(cfg Config) (*Agent, error) {
 	if cfg.Model == nil {
 		return nil, errors.New("kritrim: no model; set Config.Model")
 	}
+	if err := checkModels(append([]Model{cfg.Model}, cfg.Fallback...)...); err != nil {
+		return nil, err
+	}
 	if _, local := s.Sandbox.(localSandbox); local && !s.AllowUnsafeLocal {
 		return nil, errors.New("kritrim: the local sandbox is not an isolation boundary; set Sealed.AllowUnsafeLocal for development")
 	}
@@ -170,6 +173,10 @@ func newSealed(cfg Config) (*Agent, error) {
 		return nil, fmt.Errorf("kritrim: upload box binary: %w", err)
 	}
 	proc, err := m.Start(ctx, StartRequest{Command: []string{boxBin}, Env: []string{"KRITRIM_BOX=1"}})
+	if errors.Is(err, errors.ErrUnsupported) {
+		_ = m.Close(ctx)
+		return nil, fmt.Errorf("kritrim: this sandbox cannot run a process with stdio, so it cannot host a sealed agent; use it as Config.Sandbox instead: %w", err)
+	}
 	if err != nil {
 		_ = m.Close(ctx)
 		return nil, fmt.Errorf("kritrim: start box: %w", err)

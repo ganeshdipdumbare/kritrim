@@ -147,7 +147,7 @@ type stepEval struct{}
 
 func (stepEval) Name() string { return "max_steps" }
 func (stepEval) Evaluate(ctx context.Context, r Result) (Score, error) {
-	ok := r.Run != nil && r.Run.Stop != "max_steps"
+	ok := r.Run != nil && r.Run.Stop != kritrim.StopMaxSteps
 	return Score{Evaluator: "max_steps", Value: b2f(ok), Pass: ok, Reason: "stop=" + stopOf(r)}, nil
 }
 

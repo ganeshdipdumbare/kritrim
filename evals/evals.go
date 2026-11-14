@@ -147,6 +147,32 @@ func (e Experiment) one(ctx context.Context, c Case, run func(context.Context, C
 		r.Output = res.Text
 		r.Tokens = res.Usage.Total()
 	}
+	return e.score(ctx, r)
+}
+
+// Score evaluates results that were recorded elsewhere — rebuilt from a
+// trace with FromTrace, or produced by another system — instead of
+// running the cases. Cases, Cache and Concurrency are not used.
+func (e Experiment) Score(ctx context.Context, results []Result) *Report {
+	if e.Threshold <= 0 {
+		e.Threshold = 1
+	}
+	started := time.Now()
+	rep := &Report{Results: make([]Result, len(results))}
+	for i, r := range results {
+		r.Scores, r.Findings = nil, nil
+		rep.Results[i] = e.score(ctx, r)
+		if rep.Results[i].Pass {
+			rep.Passed++
+		} else {
+			rep.Failed++
+		}
+	}
+	rep.Duration = time.Since(started)
+	return rep
+}
+
+func (e Experiment) score(ctx context.Context, r Result) Result {
 	for _, ev := range e.Evaluators {
 		sc, serr := ev.Evaluate(ctx, r)
 		if serr != nil {

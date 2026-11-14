@@ -80,7 +80,7 @@ func Simulate(ctx context.Context, cfg SimConfig, run func(ctx context.Context, 
 		}
 		last = res
 		fmt.Fprintf(&transcript, "user: %s\nassistant: %s\n", next, res.Text)
-		if res.Stop != "stop" {
+		if res.Stop != kritrim.StopDone {
 			break
 		}
 	}

@@ -50,13 +50,22 @@ type PausedStep struct {
 	Interrupts []Interrupt  `json:"interrupts,omitempty"`
 }
 
-// Approve, Reject, Edit, Respond and Pause build decisions. Use the same
-// constructors in a Decisions map when resuming.
-func Approve() Decision                 { return Decision{Approve: true} }
-func Reject(why string) Decision        { return Decision{Reason: why} }
+// Approve runs the call as the model asked. The decision constructors work
+// in Config.Approve and in a Decisions map when resuming.
+func Approve() Decision { return Decision{Approve: true} }
+
+// Reject refuses the call; the model sees "rejected: why".
+func Reject(why string) Decision { return Decision{Reason: why} }
+
+// Edit runs the call with args instead of the model's arguments.
 func Edit(args map[string]any) Decision { return Decision{Approve: true, Args: args} }
-func Respond(text string) Decision      { return Decision{Respond: text} }
-func Pause() Decision                   { return Decision{Pause: true} }
+
+// Respond skips the call and gives the model text as its result.
+func Respond(text string) Decision { return Decision{Respond: text} }
+
+// Pause stores the run and returns Result.Stop == StopInterrupt; resume it
+// later with Decisions.
+func Pause() Decision { return Decision{Pause: true} }
 
 // ---- identity on the tool context ----
 
@@ -111,6 +120,7 @@ func StateFrom(ctx context.Context) *State {
 	return s
 }
 
+// Get returns the value for key, or nil.
 func (s *State) Get(key string) any {
 	if s == nil {
 		return nil
@@ -120,6 +130,8 @@ func (s *State) Get(key string) any {
 	return s.values[key]
 }
 
+// Set stores a value. Use plain JSON types (string, float64, bool,
+// []any, map[string]any) so it survives a session store round trip.
 func (s *State) Set(key string, v any) {
 	if s == nil {
 		return
@@ -129,6 +141,7 @@ func (s *State) Set(key string, v any) {
 	s.values[key] = v
 }
 
+// Delete removes key.
 func (s *State) Delete(key string) {
 	if s == nil {
 		return
@@ -138,6 +151,7 @@ func (s *State) Delete(key string) {
 	delete(s.values, key)
 }
 
+// Snapshot returns a copy of every value.
 func (s *State) Snapshot() map[string]any {
 	if s == nil {
 		return nil

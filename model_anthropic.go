@@ -23,7 +23,7 @@ func Anthropic(model string, cfg ...ModelConfig) Model {
 	if c.APIKey == "" {
 		c.APIKey = os.Getenv("ANTHROPIC_API_KEY")
 	}
-	return &anthropicModel{name: model, cfg: c}
+	return noGuardrail("anthropic", c, &anthropicModel{name: model, cfg: c})
 }
 
 type anthropicModel struct {
@@ -220,7 +220,7 @@ func appendAn(msgs []anMsg, msg Message) []anMsg {
 }
 
 func (m *anthropicModel) readSSE(ctx context.Context, r io.Reader, req Request, emit func(Delta)) (*Response, error) {
-	out := &Response{Stop: "stop"}
+	out := &Response{Stop: StopDone}
 	type block struct {
 		typ  string
 		name string

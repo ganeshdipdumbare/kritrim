@@ -23,6 +23,9 @@ type OpenConfig struct {
 // Machine is one running sandbox.
 type Machine interface {
 	Exec(ctx context.Context, req ExecRequest) (ExecResult, error)
+	// Start launches a long-lived process. ctx bounds starting it only:
+	// the process keeps running after ctx is done, until it exits, Kill is
+	// called or the machine is closed. A sealed agent depends on this.
 	Start(ctx context.Context, req StartRequest) (Process, error)
 	Read(ctx context.Context, path string) ([]byte, error)
 	Write(ctx context.Context, path string, data []byte, mode fs.FileMode) error

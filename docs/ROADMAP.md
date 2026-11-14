@@ -39,7 +39,7 @@ pause and resume across a real box restart (`internal/boxtest`).
 **Gate:** in-process client↔server card/send/stream; interrupt round-trip;
 auth rejection; context isolation.
 
-**Still open:** file parts. SQL task store is available via `a2a.SQLTasks`.
+**Open at the time (shipped in v1.0):** file parts. SQL task store is available via `a2a.SQLTasks`.
 
 ### Evals (`evals/`, `cmd/kritrim-evals`)
 - `Case`, `Experiment`, `Report`, bounded concurrency, `DirCache`.
@@ -55,7 +55,7 @@ auth rejection; context isolation.
 **Gate:** deterministic evaluator fixtures; judge with Mock; cache hit;
 concurrency; report rendering; generator/simulator/red-team tests.
 
-**Still open:** richer red-team suites and remote-trace evaluation.
+**Open at the time (shipped in v1.0):** richer red-team suites and remote-trace evaluation.
 
 ## v0.4 — connect + sandboxes (shipped)
 
@@ -75,7 +75,7 @@ concurrency; report rendering; generator/simulator/red-team tests.
 **Gate:** MCP stdio helper + HTTP server tests; Docker/Local conformance;
 `go run ./cmd/kritrim box build`; sealed example.
 
-**Still open:** E2B/microsandbox/Firecracker/Tensorlake/Daytona adapters; SSH
+**Open at the time (shipped in v1.0):** E2B/microsandbox/Firecracker/Tensorlake/Daytona adapters; SSH
 adapter live test (skipped without a host).
 
 ## v0.5 — multi-agent + triggers + memory (shipped)
@@ -90,7 +90,7 @@ adapter live test (skipped without a host).
 **Gate:** graph branch/cycle tests; swarm handoff test; scheduler tick test;
 webhook signature + duplicate test; memory tool test.
 
-**Still open:** cron expressions with named schedules, SQL trigger idempotency,
+**Open at the time (shipped in v1.0):** cron expressions with named schedules, SQL trigger idempotency,
 A2A agents as graph nodes (wrap `client.Run`), workflow presets.
 
 ## v0.6 — safety, observability, models (shipped)
@@ -104,7 +104,7 @@ Shipped:
 - Evals case generation and multi-turn simulation.
 - Sealed durable approval test across a box restart.
 
-**Still open:** E2B/microsandbox/Firecracker/Tensorlake sandbox adapters, A2A
+**Open at the time (shipped in v1.0):** E2B/microsandbox/Firecracker/Tensorlake sandbox adapters, A2A
 file parts, evals CLI run/generate and remote traces. (Authorization and
 python tools shipped in v0.9; voice/bidi is a non-goal.)
 
@@ -177,7 +177,7 @@ failures, empty keys rejected; pre-call token budgets (including repair and
 sealed calls, plus the run limit on the sealed host); run-scoped leases for
 sealed capability calls; JSON Schema constraints, combinators and local `$ref`.
 
-**Still open:** pluggable webhook dedupe store for multi-instance
+**Open at the time (shipped in v1.0):** pluggable webhook dedupe store for multi-instance
 deployments; richer hooks (retry requests, tool swap, end turn).
 
 ## v0.9 — parity pass 2 (shipped)
@@ -227,13 +227,55 @@ per-run identity; web-fetch HTML/JSON/404/off-allowlist, todos state round
 trip, python sandbox refusal; goal-loop retry, give-up, interrupt;
 graph/swarm as tools; criteria, trajectory prompt, chaos determinism.
 
-**Still open:** provider guardrails (Bedrock `ApplyGuardrail`),
-embedding-backed memory search, richer hooks (retry requests, tool swap,
-end turn), evals CLI `run`/`generate`, pluggable webhook dedupe store.
+**Still open (all shipped in v1.0):** provider guardrails (Bedrock
+`ApplyGuardrail`), embedding-backed memory search, richer hooks (retry
+requests, tool swap, end turn), evals CLI `run`/`generate`, pluggable webhook
+dedupe store.
 
-## v1.0 — freeze
+## v1.0 — stable (shipped)
 
-API stability, migration guide, benchmarks, docs site, signed releases.
+Every "still open" item above, then the freeze.
+
+- **Hooks:** `ModelEvent.Retry`, `ModelEvent.End`, `ToolEvent.End`,
+  `ToolEvent.Swap` (re-enters approval and validation); `Event*` and
+  `Stop*` constants; `EventInterrupt` is emitted.
+- **Guardrails:** `ModelConfig.Guardrail` (Bedrock Converse) and
+  `guard.Bedrock` (ApplyGuardrail for any model); provider safety stops end
+  with `StopGuardrail`.
+- **A2A:** file parts with a fetch allowlist; `Client.Node` for graphs.
+- **Multi-agent:** `Sequence`, `Router`, `AgentNode` presets.
+- **Memory:** `NewSemantic` with OpenAI, Ollama, Gemini and Bedrock
+  embedders.
+- **Triggers:** cron and named schedules; `DedupeStore` with `MemoryDedupe`
+  and `SQLDedupe` for webhooks and ticks across instances.
+- **Evals:** `Experiment.Score`, `FromTrace`, more red-team probes; CLI
+  `generate`, `run`, `traces`.
+- **Sandboxes:** E2B, Tensorlake, microsandbox, Firecracker (with
+  `kritrim-vmagent`) and Daytona adapters; stricter conformance (stdin, exit
+  codes, modes, start-context lifetime).
+- **Freeze:** MIT license, `docs/API.md`, `CHANGELOG.md`,
+  `docs/MIGRATING.md`, `docs/BENCHMARKS.md`, signed release artifacts with
+  provenance, `gorelease` in CI, docs site for v1.
+
+**Gate:** hook retry/end/swap tests (swap still needs approval, no double
+swap); guardrail wire and refusal tests; ApplyGuardrail block/mask/fail-closed
+tests; A2A file mapping, refusal, allowlist, redirect and private-address
+tests; preset and remote-node tests; semantic ranking, persistence and
+embedder wire tests; cron table and fuzz tests; dedupe store contract on
+memory and SQL, cross-instance webhook and scheduler tests; trace round trip
+and CLI tests; every adapter through `sandboxtest` against a protocol fake;
+sealed agents end to end on Docker and E2B; benchmarks; cross-OS vet; all
+release targets build.
+
+Found and fixed on the way: a sealed box on Docker was killed when `New`
+returned, and Docker `Exec` dropped stdin.
+
+## After 1.0
+
+Additive work that keeps the v1 API: more provider guardrails as providers
+expose them, more embedders, adapters for further sandbox providers, and
+live-test runs of the cloud adapters in CI once credentials are available
+to it.
 
 ## Non-goals
 

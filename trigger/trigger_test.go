@@ -226,7 +226,7 @@ func TestWebhookKeyAndSignatureNamespaces(t *testing.T) {
 }
 
 func TestWebhookFullMemoryRefusesInsteadOfForgetting(t *testing.T) {
-	h, m := newHook(t, WebhookConfig{MaxEntries: 2})
+	h, m := newHook(t, WebhookConfig{Store: MemoryDedupe(2)})
 	now := time.Now()
 	body := []byte(`{"prompt":"x"}`)
 	for _, k := range []string{"k1", "k2"} {

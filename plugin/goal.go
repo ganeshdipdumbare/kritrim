@@ -83,7 +83,7 @@ func GoalLoop(ctx context.Context, a *kritrim.Agent, cfg GoalConfig) (*kritrim.R
 			return last, err
 		}
 		last = res
-		if res.Stop == "interrupt" {
+		if res.Stop == kritrim.StopInterrupt {
 			// Waiting on a human: returning is the only honest move.
 			return res, nil
 		}

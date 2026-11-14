@@ -152,6 +152,16 @@ type ServerConfig struct {
 	// internal deployments only; it is an SSRF surface.
 	PushAllowPrivate bool
 	PushClient       *http.Client
+
+	// MaxFileBytes caps the total size of the file parts in one message,
+	// inline or fetched. Default 1 MB; inline bytes are also bounded by
+	// MaxBodyBytes.
+	MaxFileBytes int
+	// FileHosts lists the hosts a file part's URI may be fetched from,
+	// e.g. "files.example.com" or "*.example.com". Empty means URIs are
+	// refused. Exact entries may be private; wildcards must be public.
+	FileHosts  []string
+	FileClient *http.Client
 }
 
 // Server is an http.Handler speaking A2A.
@@ -161,6 +171,7 @@ type Server struct {
 	contexts   map[string]*contextEntry
 	cancels    map[string]context.CancelFunc
 	pushClient *http.Client
+	fileClient *http.Client
 }
 
 type contextEntry struct {
@@ -220,10 +231,20 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	if cfg.MaxFileBytes <= 0 {
+		cfg.MaxFileBytes = 1 << 20
+	}
+	if cfg.FileClient == nil {
+		cfg.FileClient = &http.Client{Timeout: 30 * time.Second}
+	}
+	fileClient, err := fileHTTPClient(cfg.FileClient, cfg.FileHosts)
+	if err != nil {
+		return nil, err
+	}
 	cfg.Card.Capabilities.Streaming = true
 	cfg.Card.Capabilities.PushNotifications = true
 	return &Server{cfg: cfg, contexts: map[string]*contextEntry{}, cancels: map[string]context.CancelFunc{},
-		pushClient: pushClient}, nil
+		pushClient: pushClient, fileClient: fileClient}, nil
 }
 
 // Close closes every cached agent.
@@ -240,6 +261,7 @@ func (s *Server) Close() {
 	}
 }
 
+// ServeHTTP serves the agent card and the JSON-RPC methods.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.Method == http.MethodGet && (r.URL.Path == CardPath || r.URL.Path == OldCardPath):
@@ -336,9 +358,14 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request, id json.RawMessage
 	}()
 
 	decisions := decisionsFrom(p.Message)
-	prompt := p.Message.Text()
-	if prompt == "" && len(decisions) == 0 {
-		s.fail(w, id, -32602, "message has no text or interrupt responses")
+	files, images, err := s.inputFiles(ctx, p.Message)
+	if err != nil {
+		s.fail(w, id, -32602, err.Error())
+		return
+	}
+	prompt := p.Message.Text() + files
+	if prompt == "" && len(images) == 0 && len(decisions) == 0 {
+		s.fail(w, id, -32602, "message has no text, files or interrupt responses")
 		return
 	}
 
@@ -357,6 +384,9 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request, id json.RawMessage
 	opts := []kritrim.Option{kritrim.Thread(threadID(who, ctxID))}
 	if len(decisions) > 0 {
 		opts = append(opts, kritrim.Decisions(decisions))
+	}
+	if len(images) > 0 {
+		opts = append(opts, kritrim.Images(images...))
 	}
 
 	if stream {
@@ -394,7 +424,7 @@ func (s *Server) streamRun(ctx context.Context, w http.ResponseWriter, id json.R
 		"status": map[string]any{"state": StateWorking}, "final": false})
 	var text strings.Builder
 	opts = append(opts, kritrim.OnEvent(func(e kritrim.Event) {
-		if e.Type == "text" && e.Text != "" {
+		if e.Type == kritrim.EventText && e.Text != "" {
 			text.WriteString(e.Text)
 			writeEvent(map[string]any{"kind": "artifact-update", "taskId": task.ID, "contextId": task.ContextID,
 				"artifact": map[string]any{"artifactId": "answer", "name": "answer", "parts": []Part{TextPart(e.Text)}},
@@ -422,7 +452,7 @@ func (s *Server) streamRun(ctx context.Context, w http.ResponseWriter, id json.R
 
 func applyResult(task *Task, res *kritrim.Result) {
 	task.Status = TaskStatus{State: StateCompleted, Timestamp: now()}
-	if res.Stop == "interrupt" {
+	if res.Stop == kritrim.StopInterrupt {
 		parts := make([]Part, 0, len(res.Interrupts))
 		items := make([]any, 0, len(res.Interrupts))
 		for _, in := range res.Interrupts {
@@ -561,7 +591,7 @@ func (s *Server) agent(who, ctxID string) (*kritrim.Agent, error) {
 func decisionsFrom(msg Message) map[string]kritrim.Decision {
 	var out map[string]kritrim.Decision
 	for _, p := range msg.Parts {
-		if p.Kind != "data" {
+		if p.Kind != KindData {
 			continue
 		}
 		raw, ok := p.Data["interruptResponse"].(map[string]any)

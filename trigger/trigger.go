@@ -20,98 +20,6 @@ import (
 	"github.com/ganeshdipdumbare/kritrim"
 )
 
-// Schedule is one recurring run.
-type Schedule struct {
-	Every  time.Duration
-	Thread string
-	Prompt string
-	User   string
-	Roles  []string
-}
-
-// Scheduler runs schedules against one agent. A schedule skips a tick when
-// its previous run is still going.
-type Scheduler struct {
-	agent     *kritrim.Agent
-	schedules []Schedule
-	cancel    context.CancelFunc
-	wg        sync.WaitGroup
-	mu        sync.Mutex
-	running   []bool
-	log       func(msg string)
-}
-
-// NewScheduler validates the schedules.
-func NewScheduler(agent *kritrim.Agent, schedules ...Schedule) (*Scheduler, error) {
-	if agent == nil {
-		return nil, errors.New("trigger: agent is required")
-	}
-	for i, s := range schedules {
-		if s.Every <= 0 {
-			return nil, fmt.Errorf("trigger: schedule %d needs Every > 0", i)
-		}
-	}
-	return &Scheduler{agent: agent, schedules: schedules, running: make([]bool, len(schedules))}, nil
-}
-
-// SetLogger receives run errors.
-func (s *Scheduler) SetLogger(fn func(msg string)) { s.log = fn }
-
-// Start begins the schedules and returns immediately.
-func (s *Scheduler) Start(ctx context.Context) {
-	ctx, s.cancel = context.WithCancel(ctx)
-	for i, sc := range s.schedules {
-		s.wg.Add(1)
-		go s.loop(ctx, i, sc)
-	}
-}
-
-func (s *Scheduler) loop(ctx context.Context, i int, sc Schedule) {
-	defer s.wg.Done()
-	t := time.NewTicker(sc.Every)
-	defer t.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.C:
-			if !s.begin(i) {
-				continue
-			}
-			_, err := s.agent.Run(ctx, sc.Prompt, kritrim.Thread(sc.Thread),
-				kritrim.User(sc.User), kritrim.Roles(sc.Roles...))
-			s.end(i)
-			if err != nil && ctx.Err() == nil && s.log != nil {
-				s.log("schedule " + sc.Thread + ": " + err.Error())
-			}
-		}
-	}
-}
-
-func (s *Scheduler) begin(i int) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.running[i] {
-		return false
-	}
-	s.running[i] = true
-	return true
-}
-
-func (s *Scheduler) end(i int) {
-	s.mu.Lock()
-	s.running[i] = false
-	s.mu.Unlock()
-}
-
-// Close stops the schedules and waits for running ticks.
-func (s *Scheduler) Close() {
-	if s.cancel != nil {
-		s.cancel()
-	}
-	s.wg.Wait()
-}
-
 // WebhookConfig exposes an agent at one HTTP path.
 type WebhookConfig struct {
 	Agent *kritrim.Agent
@@ -129,9 +37,10 @@ type WebhookConfig struct {
 	// DedupeTTL is how long a delivery is remembered. Default 24h; it is
 	// never shorter than twice Tolerance.
 	DedupeTTL time.Duration
-	// MaxEntries bounds the dedupe memory. Default 100000. When it is full
-	// of unexpired deliveries the webhook answers 503 with Retry-After.
-	MaxEntries int
+	// Store remembers deliveries. Default MemoryDedupe(0), one process;
+	// share a SQLDedupe when several instances serve the webhook. A full
+	// store answers 503 with Retry-After.
+	Store DedupeStore
 	// Logger receives run errors; callers only see "run failed".
 	Logger func(msg string)
 }
@@ -191,8 +100,8 @@ func Webhook(cfg WebhookConfig) (http.Handler, error) {
 	if cfg.DedupeTTL < 2*cfg.Tolerance {
 		cfg.DedupeTTL = 2 * cfg.Tolerance
 	}
-	if cfg.MaxEntries <= 0 {
-		cfg.MaxEntries = 100_000
+	if cfg.Store == nil {
+		cfg.Store = MemoryDedupe(0)
 	}
 	if cfg.Thread == nil {
 		cfg.Thread = func([]byte) string { return "webhook" }
@@ -200,28 +109,19 @@ func Webhook(cfg WebhookConfig) (http.Handler, error) {
 	if cfg.Prompt == nil {
 		cfg.Prompt = defaultPrompt
 	}
-	h := &webhook{cfg: cfg, secret: []byte(secret), seen: map[string]*delivery{}}
+	h := &webhook{cfg: cfg, secret: []byte(secret), waiting: map[string]chan struct{}{}}
 	return h, nil
 }
 
 type webhook struct {
 	cfg    WebhookConfig
 	secret []byte
-	mu     sync.Mutex
-	seen   map[string]*delivery
-}
 
-type delivery struct {
-	done    chan struct{}
-	print   string // fingerprint of the signed request
-	out     map[string]any
-	failed  bool
-	expires time.Time
+	// waiting lets duplicates in this process wait for the leader's
+	// result instead of polling the store.
+	mu      sync.Mutex
+	waiting map[string]chan struct{}
 }
-
-// errBusy means the dedupe memory is full of deliveries that are still
-// running or still replayable; the sender should retry later.
-var errBusy = errors.New("trigger: webhook busy")
 
 func (h *webhook) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -251,58 +151,101 @@ func (h *webhook) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		id = "key:" + key
 	}
 	sum := sha256.Sum256(body)
-	d, leader, err := h.begin(id, hex.EncodeToString(sum[:]))
-	switch {
-	case errors.Is(err, errBusy):
-		w.Header().Set("Retry-After", "5")
-		http.Error(w, "busy", http.StatusServiceUnavailable)
-		return
-	case err != nil:
-		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error()})
-		return
-	}
-	if !leader {
-		select {
-		case <-d.done:
-		case <-r.Context().Done():
+	print := hex.EncodeToString(sum[:])
+	for {
+		c, err := h.cfg.Store.Claim(r.Context(), id, print, time.Now().Add(h.cfg.DedupeTTL))
+		switch {
+		case errors.Is(err, ErrBusy):
+			w.Header().Set("Retry-After", "5")
+			http.Error(w, "busy", http.StatusServiceUnavailable)
+			return
+		case errors.Is(err, ErrConflict):
+			writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error()})
+			return
+		case err != nil:
+			h.logf("webhook dedupe: %v", err)
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "dedupe failed"})
+			return
+		case c.Done:
+			out := map[string]any{}
+			_ = json.Unmarshal(c.Result, &out)
+			out["duplicate"] = true
+			writeJSON(w, http.StatusOK, out)
+			return
+		case c.Won:
+			h.run(w, r, id, body)
 			return
 		}
-		if d.failed {
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "run failed"})
+		// Running elsewhere: wait for it, then look again. A leader
+		// that fails releases the delivery and this caller runs it.
+		if !h.wait(r.Context(), id) {
 			return
 		}
-		out := map[string]any{"duplicate": true}
-		for k, v := range d.out {
-			out[k] = v
-		}
-		writeJSON(w, http.StatusOK, out)
-		return
 	}
-	// Every registered delivery is completed, even if a callback or the
-	// run panics, so duplicates never wait on an abandoned entry.
-	finished := false
-	defer func() {
-		if !finished {
-			h.finish(id, d, nil)
-		}
-	}()
+}
+
+// run executes a delivery this handler won. Every claim is completed or
+// released, even if a callback or the run panics, so duplicates never wait
+// on an abandoned delivery.
+func (h *webhook) run(w http.ResponseWriter, r *http.Request, id string, body []byte) {
+	done := make(chan struct{})
+	h.mu.Lock()
+	h.waiting[id] = done
+	h.mu.Unlock()
 	// The run is not tied to this connection: a sender that times out and
 	// retries gets the same result instead of a second run.
 	ctx := context.WithoutCancel(r.Context())
+	finished := false
+	defer func() {
+		if !finished {
+			_ = h.cfg.Store.Release(ctx, id)
+		}
+		h.mu.Lock()
+		delete(h.waiting, id)
+		h.mu.Unlock()
+		close(done)
+	}()
 	res, err := h.cfg.Agent.Run(ctx, h.cfg.Prompt(body), kritrim.Thread(h.cfg.Thread(body)))
 	if err != nil {
-		if h.cfg.Logger != nil {
-			h.cfg.Logger("webhook run: " + err.Error())
-		}
-		finished = true
-		h.finish(id, d, nil)
+		h.logf("webhook run: %v", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "run failed"})
 		return
 	}
 	out := map[string]any{"text": res.Text, "thread": res.Thread, "stop": res.Stop}
+	result, _ := json.Marshal(out)
+	if err := h.cfg.Store.Complete(ctx, id, result); err != nil {
+		h.logf("webhook dedupe: %v", err)
+	}
 	finished = true
-	h.finish(id, d, out)
 	writeJSON(w, http.StatusOK, out)
+}
+
+// wait blocks until a delivery running in this process finishes, or for a
+// short poll interval when it runs in another one. It reports false when
+// the caller went away.
+func (h *webhook) wait(ctx context.Context, id string) bool {
+	h.mu.Lock()
+	ch := h.waiting[id]
+	h.mu.Unlock()
+	var tick <-chan time.Time
+	if ch == nil {
+		t := time.NewTimer(250 * time.Millisecond)
+		defer t.Stop()
+		tick = t.C
+	}
+	select {
+	case <-ch:
+	case <-tick:
+	case <-ctx.Done():
+		return false
+	}
+	return true
+}
+
+func (h *webhook) logf(format string, args ...any) {
+	if h.cfg.Logger != nil {
+		h.cfg.Logger(fmt.Sprintf(format, args...))
+	}
 }
 
 func (h *webhook) fresh(ts string) bool {
@@ -312,61 +255,6 @@ func (h *webhook) fresh(ts string) bool {
 	}
 	d := time.Since(time.Unix(n, 0))
 	return d <= h.cfg.Tolerance && d >= -h.cfg.Tolerance
-}
-
-// begin registers a delivery or returns the existing one. A key reused for a
-// different body is a conflict, not a duplicate.
-func (h *webhook) begin(id, print string) (*delivery, bool, error) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	now := time.Now()
-	if d, ok := h.seen[id]; ok && (now.Before(d.expires) || !isDone(d)) {
-		if d.print != print {
-			return nil, false, errors.New("idempotency key reused for a different payload")
-		}
-		return d, false, nil
-	}
-	if len(h.seen) >= h.cfg.MaxEntries {
-		h.evict(now)
-		if len(h.seen) >= h.cfg.MaxEntries {
-			return nil, false, errBusy
-		}
-	}
-	d := &delivery{done: make(chan struct{}), print: print, expires: now.Add(h.cfg.DedupeTTL)}
-	h.seen[id] = d
-	return d, true, nil
-}
-
-func (h *webhook) finish(id string, d *delivery, out map[string]any) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	d.out, d.failed = out, out == nil
-	// A failed run may be retried by the sender. Only remove the entry this
-	// leader owns.
-	if d.failed && h.seen[id] == d {
-		delete(h.seen, id)
-	}
-	close(d.done)
-}
-
-// evict drops deliveries that are finished and past their TTL. Unexpired
-// entries are kept because their signatures may still be replayed, and
-// in-flight entries are kept so their duplicates never run twice.
-func (h *webhook) evict(now time.Time) {
-	for k, d := range h.seen {
-		if now.After(d.expires) && isDone(d) {
-			delete(h.seen, k)
-		}
-	}
-}
-
-func isDone(d *delivery) bool {
-	select {
-	case <-d.done:
-		return true
-	default:
-		return false
-	}
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

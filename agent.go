@@ -184,6 +184,9 @@ func New(cfg Config) (*Agent, error) {
 	if cfg.Model == nil {
 		return nil, errors.New("kritrim: no model; set Config.Model")
 	}
+	if err := checkModels(append([]Model{cfg.Model}, cfg.Fallback...)...); err != nil {
+		return nil, err
+	}
 	if err := cfg.Reasoning.validate(); err != nil {
 		return nil, err
 	}
@@ -277,7 +280,7 @@ func (a *Agent) AsTool(name, description string) Tool {
 		if err != nil {
 			return "", err
 		}
-		if res.Stop == "interrupt" {
+		if res.Stop == StopInterrupt {
 			return "", fmt.Errorf("%s needs approval; ask the user", name)
 		}
 		return res.Text, nil

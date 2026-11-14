@@ -62,9 +62,9 @@ func (m *mockModel) response() (*Response, error) {
 	stop := t.Stop
 	if stop == "" {
 		if len(t.ToolCalls) > 0 {
-			stop = "tool_calls"
+			stop = StopToolCalls
 		} else {
-			stop = "stop"
+			stop = StopDone
 		}
 	}
 	return &Response{Text: t.Text, Reasoning: t.Reasoning, ToolCalls: t.ToolCalls,

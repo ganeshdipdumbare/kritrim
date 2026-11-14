@@ -67,9 +67,41 @@ type Step struct {
 	Usage       Usage        `json:"usage"`
 }
 
-// Event is emitted while a run streams. Type names the kind:
-// text, reasoning, tool_call, tool_result, approval, step_start, step_end,
-// finish, error.
+// Event types, the values of Event.Type.
+const (
+	EventText       = "text"
+	EventReasoning  = "reasoning"
+	EventToolCall   = "tool_call"
+	EventToolResult = "tool_result"
+	EventApproval   = "approval"
+	EventStepStart  = "step_start"
+	EventStepEnd    = "step_end"
+	EventFinish     = "finish"
+	EventInterrupt  = "interrupt"
+	EventError      = "error"
+)
+
+// Stop reasons, the values of Result.Stop and Response.Stop.
+const (
+	// StopDone: the model answered without asking for a tool.
+	StopDone = "stop"
+	// StopMaxSteps: Limits.Steps was reached.
+	StopMaxSteps = "max_steps"
+	// StopInterrupt: the run paused for durable approvals.
+	StopInterrupt = "interrupt"
+	// StopStopped: the Stop tool ended the run.
+	StopStopped = "stopped"
+	// StopHook: a hook set End.
+	StopHook = "hook"
+	// StopGuardrail: a provider guardrail intervened.
+	StopGuardrail = "guardrail"
+	// StopToolCalls (Response only): the model asked for tools.
+	StopToolCalls = "tool_calls"
+	// StopLength (Response only): the reply hit the output token cap.
+	StopLength = "length"
+)
+
+// Event is emitted while a run streams. Type is one of the Event constants.
 type Event struct {
 	Type       string      `json:"type"`
 	Text       string      `json:"text,omitempty"`
@@ -77,6 +109,7 @@ type Event struct {
 	ToolCall   *ToolCall   `json:"tool_call,omitempty"`
 	ToolResult *ToolResult `json:"tool_result,omitempty"`
 	Approval   *Approval   `json:"approval,omitempty"`
+	Interrupts []Interrupt `json:"interrupts,omitempty"`
 	Step       int         `json:"step,omitempty"`
 	Usage      *Usage      `json:"usage,omitempty"`
 	Err        error       `json:"-"`
@@ -87,7 +120,7 @@ type Result struct {
 	Text       string      `json:"text"`
 	Steps      []Step      `json:"steps"`
 	Usage      Usage       `json:"usage"`
-	Stop       string      `json:"stop"` // stop | max_steps | interrupt | stopped
+	Stop       string      `json:"stop"` // one of the Stop constants
 	Interrupts []Interrupt `json:"interrupts,omitempty"`
 	Paused     *PausedStep `json:"paused,omitempty"`
 	Messages   []Message   `json:"messages"`

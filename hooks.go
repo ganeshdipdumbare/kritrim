@@ -6,6 +6,7 @@ import (
 	"math/rand/v2"
 	"net"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -35,6 +36,15 @@ type RunEvent struct {
 type ModelEvent struct {
 	Request  *Request
 	Response *Response
+	// Retry, set by AfterModel, discards Response and calls the model
+	// again. The discarded call still counts against the token budget,
+	// text it streamed has already been emitted, and a step retries at
+	// most Retry.Max times (default 3).
+	Retry bool
+	// End, set by AfterModel, ends the run with this response: its tool
+	// calls are dropped and Result.Stop is StopHook. The value is the
+	// reason written to the audit log.
+	End string
 }
 
 // ToolEvent describes one tool call. BeforeTool may set Deny to skip it.
@@ -43,6 +53,15 @@ type ToolEvent struct {
 	Args   map[string]any
 	Result *ToolResult
 	Deny   string
+	// Swap, set by BeforeTool, runs the named tool instead of Call.Name,
+	// with Args. The swapped call goes through approval, argument
+	// validation and BeforeTool again, so a swap cannot skip a check; it
+	// cannot swap a second time, and an approval for it cannot Pause.
+	Swap string
+	// End, set by BeforeTool or AfterTool, ends the run once the current
+	// step's tool calls finish; Result.Stop is StopHook. The value is the
+	// reason written to the audit log.
+	End string
 }
 
 func (h Hooks) beforeRun(ctx context.Context, e *RunEvent) error {
@@ -65,10 +84,39 @@ func (h Hooks) beforeModel(ctx context.Context, req *Request) error {
 	return nil
 }
 
-func (h Hooks) afterModel(ctx context.Context, req *Request, resp *Response) {
+func (h Hooks) afterModel(ctx context.Context, req *Request, resp *Response) *ModelEvent {
+	e := &ModelEvent{Request: req, Response: resp}
 	if h.AfterModel != nil {
-		h.AfterModel(ctx, &ModelEvent{Request: req, Response: resp})
+		h.AfterModel(ctx, e)
 	}
+	return e
+}
+
+// hookEnd records the first End a tool hook set during a run. It is shared
+// by parallel tool calls.
+type hookEnd struct {
+	mu     sync.Mutex
+	reason string
+}
+
+func (h *hookEnd) set(reason string) {
+	if h == nil || reason == "" {
+		return
+	}
+	h.mu.Lock()
+	if h.reason == "" {
+		h.reason = reason
+	}
+	h.mu.Unlock()
+}
+
+func (h *hookEnd) get() string {
+	if h == nil {
+		return ""
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.reason
 }
 
 // Retry configures model-call retries. The zero value means three attempts

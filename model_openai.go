@@ -23,7 +23,7 @@ func OpenAI(model string, cfg ...ModelConfig) Model {
 	if c.APIKey == "" {
 		c.APIKey = os.Getenv("OPENAI_API_KEY")
 	}
-	return &openaiModel{name: model, cfg: c}
+	return noGuardrail("openai", c, &openaiModel{name: model, cfg: c})
 }
 
 // Ollama returns a model served by a local Ollama instance.
@@ -38,7 +38,7 @@ func Ollama(model string, cfg ...ModelConfig) Model {
 	if c.JSONMode == "" {
 		c.JSONMode = "json_schema"
 	}
-	return &openaiModel{name: model, cfg: c}
+	return noGuardrail("ollama", c, &openaiModel{name: model, cfg: c})
 }
 
 // Compatible returns any OpenAI-compatible provider, such as DeepSeek,
@@ -58,7 +58,7 @@ func Compatible(provider, baseURL, model string, cfg ...ModelConfig) Model {
 	if c.JSONMode == "" {
 		c.JSONMode = "json_schema"
 	}
-	return &openaiModel{name: model, cfg: c}
+	return noGuardrail(provider, c, &openaiModel{name: model, cfg: c})
 }
 
 type openaiModel struct {
@@ -232,9 +232,9 @@ func (m *openaiModel) Stream(ctx context.Context, req Request, emit func(Delta))
 	}
 	if out.Stop == "" {
 		if len(out.ToolCalls) > 0 {
-			out.Stop = "tool_calls"
+			out.Stop = StopToolCalls
 		} else {
-			out.Stop = "stop"
+			out.Stop = StopDone
 		}
 	}
 	return &out, nil
@@ -243,11 +243,13 @@ func (m *openaiModel) Stream(ctx context.Context, req Request, emit func(Delta))
 func stopReason(s string) string {
 	switch s {
 	case "tool_calls", "tool_use", "function_call":
-		return "tool_calls"
+		return StopToolCalls
 	case "length", "max_tokens":
-		return "length"
+		return StopLength
+	case "content_filter", "refusal":
+		return StopGuardrail
 	default:
-		return "stop"
+		return StopDone
 	}
 }
 

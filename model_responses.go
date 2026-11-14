@@ -23,7 +23,7 @@ func OpenAIResponses(model string, cfg ...ModelConfig) Model {
 	if c.APIKey == "" {
 		c.APIKey = os.Getenv("OPENAI_API_KEY")
 	}
-	return &responsesModel{name: model, cfg: c}
+	return noGuardrail("openai", c, &responsesModel{name: model, cfg: c})
 }
 
 type responsesModel struct {
@@ -250,7 +250,7 @@ func (m *responsesModel) parse(raw rResponse) (*Response, error) {
 	if raw.Error != nil {
 		return nil, fmt.Errorf("kritrim: %s: %s", m.Name(), raw.Error.Message)
 	}
-	out := &Response{Usage: Usage{In: raw.Usage.InputTokens, Out: raw.Usage.OutputTokens}, Stop: "stop"}
+	out := &Response{Usage: Usage{In: raw.Usage.InputTokens, Out: raw.Usage.OutputTokens}, Stop: StopDone}
 	for _, item := range raw.Output {
 		switch item.Type {
 		case "message":
@@ -270,7 +270,7 @@ func (m *responsesModel) parse(raw rResponse) (*Response, error) {
 		}
 	}
 	if len(out.ToolCalls) > 0 {
-		out.Stop = "tool_calls"
+		out.Stop = StopToolCalls
 	}
 	return out, nil
 }

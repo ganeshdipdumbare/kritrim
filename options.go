@@ -25,6 +25,9 @@ type runOptions struct {
 	// without owning the caller's output type.
 	schema     map[string]any
 	schemaName string
+
+	// end is set when a tool hook asks the run to end.
+	end *hookEnd
 }
 
 // Thread runs on a stored conversation. Omit it for a one-off run.

@@ -22,7 +22,7 @@ func Gemini(model string, cfg ...ModelConfig) Model {
 	if c.APIKey == "" {
 		c.APIKey = os.Getenv("GEMINI_API_KEY")
 	}
-	return &geminiModel{name: model, cfg: c}
+	return noGuardrail("gemini", c, &geminiModel{name: model, cfg: c})
 }
 
 type geminiModel struct {
@@ -182,7 +182,7 @@ type gemResponse struct {
 }
 
 func (m *geminiModel) parse(chunks []gemResponse, req Request, _ func(Delta)) (*Response, error) {
-	out := &Response{Stop: "stop"}
+	out := &Response{Stop: StopDone}
 	for _, c := range chunks {
 		out.Usage.In = c.UsageMetadata.Prompt
 		out.Usage.Out = c.UsageMetadata.Out
@@ -200,19 +200,21 @@ func (m *geminiModel) parse(chunks []gemResponse, req Request, _ func(Delta)) (*
 			if cand.FinishReason != "" {
 				switch cand.FinishReason {
 				case "MAX_TOKENS":
-					out.Stop = "length"
+					out.Stop = StopLength
+				case "SAFETY", "PROHIBITED_CONTENT", "BLOCKLIST", "SPII", "RECITATION":
+					out.Stop = StopGuardrail
 				case "STOP":
 					if len(out.ToolCalls) > 0 {
-						out.Stop = "tool_calls"
+						out.Stop = StopToolCalls
 					} else {
-						out.Stop = "stop"
+						out.Stop = StopDone
 					}
 				}
 			}
 		}
 	}
-	if req.Schema != nil {
-		out.Stop = "stop"
+	if req.Schema != nil && out.Stop != StopGuardrail {
+		out.Stop = StopDone
 	}
 	return out, nil
 }

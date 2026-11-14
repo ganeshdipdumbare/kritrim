@@ -59,18 +59,46 @@ const (
 	StateFailed        = "failed"
 )
 
-// Part is a text or data content part.
+// Part kinds, the values of Part.Kind.
+const (
+	KindText = "text"
+	KindData = "data"
+	KindFile = "file"
+)
+
+// Part is a text, data or file content part.
 type Part struct {
 	Kind string         `json:"kind"`
 	Text string         `json:"text,omitempty"`
 	Data map[string]any `json:"data,omitempty"`
+	File *File          `json:"file,omitempty"`
+}
+
+// File is the content of a file part: inline Bytes (base64 on the wire) or
+// a URI, never both.
+type File struct {
+	Name     string `json:"name,omitempty"`
+	MimeType string `json:"mimeType,omitempty"`
+	Bytes    []byte `json:"bytes,omitempty"`
+	URI      string `json:"uri,omitempty"`
 }
 
 // TextPart builds a text part.
-func TextPart(s string) Part { return Part{Kind: "text", Text: s} }
+func TextPart(s string) Part { return Part{Kind: KindText, Text: s} }
 
 // DataPart builds a data part.
-func DataPart(v map[string]any) Part { return Part{Kind: "data", Data: v} }
+func DataPart(v map[string]any) Part { return Part{Kind: KindData, Data: v} }
+
+// FilePart builds a file part with inline bytes.
+func FilePart(name, mimeType string, data []byte) Part {
+	return Part{Kind: KindFile, File: &File{Name: name, MimeType: mimeType, Bytes: data}}
+}
+
+// FileURI builds a file part that points at a URI. A kritrim server
+// fetches it only from a host in ServerConfig.FileHosts.
+func FileURI(name, mimeType, uri string) Part {
+	return Part{Kind: KindFile, File: &File{Name: name, MimeType: mimeType, URI: uri}}
+}
 
 // Message is one A2A message.
 type Message struct {
@@ -85,7 +113,7 @@ type Message struct {
 func (m Message) Text() string {
 	s := ""
 	for _, p := range m.Parts {
-		if p.Kind == "text" {
+		if p.Kind == KindText {
 			s += p.Text
 		}
 	}

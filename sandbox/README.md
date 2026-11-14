@@ -1,10 +1,30 @@
 # Sandbox providers
 
 A sandbox is anything that can run a process, copy files and be destroyed.
-Docker, Local and SSH ship in the repository; every adapter must pass the
-conformance suite in [`sandboxtest`](sandboxtest/sandboxtest.go). E2B,
-microsandbox, Firecracker, Tensorlake, Daytona and cloud VMs plug in by
-implementing the same interfaces — no core changes.
+Docker and Local ship in the root package; SSH, E2B, Tensorlake, Daytona,
+microsandbox and Firecracker live under `sandbox/`. Every adapter must pass
+the conformance suite in [`sandboxtest`](sandboxtest/sandboxtest.go), and
+other providers plug in by implementing the same interfaces — no core
+changes.
+
+| Package | Backend | Sealed agent | Live test needs |
+|---|---|:---:|---|
+| `sandbox/ssh` | a host over SSH | yes | an SSH host |
+| `sandbox/e2b` | E2B API + envd (Connect RPC) | yes | `E2B_API_KEY` |
+| `sandbox/tensorlake` | Tensorlake API + sandbox proxy | yes | `TENSORLAKE_API_KEY` |
+| `sandbox/microsandbox` | the `msb` CLI | yes | `msb` and `KRITRIM_LIVE_MSB=1` |
+| `sandbox/firecracker` | firecracker API + `kritrim-vmagent` over vsock | yes | `/dev/kvm`, `KRITRIM_FC_KERNEL`, `KRITRIM_FC_ROOTFS` |
+| `sandbox/daytona` | Daytona API + toolbox | no | `DAYTONA_API_KEY` |
+
+Without credentials, each adapter's tests run the conformance suite against a
+fake of the provider's protocol that executes commands on the local machine.
+
+For Firecracker, build the guest agent and copy it into the root filesystem:
+
+```bash
+go run ./cmd/kritrim vmagent build -o kritrim-vmagent   # linux, host arch
+sudo mount rootfs.ext4 /mnt && sudo cp kritrim-vmagent /mnt/usr/local/bin/ && sudo umount /mnt
+```
 
 ```go
 import (
@@ -51,7 +71,12 @@ cannot enforce isolation otherwise.
 | Tools in a sandbox (`Config.Sandbox`) | `Exec`, `Read`, `Write`, `Close` |
 | Sealed agent (`Config.Sealed`) | `Open`, `Write` (upload binary), `Start` (stdio RPC), `Close` |
 
-`Start` must give the caller the process's real stdin and stdout. For an
+`Start` must give the caller the process's real stdin and stdout, and its
+context bounds only starting the process: the process keeps running until it
+exits, `Kill` is called or the machine is closed. A provider that cannot
+stream a process's stdio returns `errors.ErrUnsupported` from `Start` and
+tests with `sandboxtest.RunWith(t, box, sandboxtest.Options{NoStart: true})`;
+it can serve `Config.Sandbox` but not a sealed agent. For an
 HTTP-only provider, that usually means a PTY or a websocket that a small shim
 binary exposes.
 

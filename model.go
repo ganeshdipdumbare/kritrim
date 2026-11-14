@@ -2,6 +2,7 @@ package kritrim
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -72,6 +73,46 @@ type ModelConfig struct {
 	// "json_schema" (default, native) or "json_object" (schema in the
 	// prompt, for providers without native schema support).
 	JSONMode string
+	// Guardrail applies a Bedrock guardrail to every call (Converse
+	// guardrailConfig). Other providers refuse it at kritrim.New; use
+	// guard.Bedrock to check any model's traffic with ApplyGuardrail.
+	Guardrail *Guardrail
+}
+
+// Guardrail names a provider guardrail. When it intervenes the reply is the
+// guardrail's canned message and Result.Stop is StopGuardrail.
+type Guardrail struct {
+	ID      string // guardrail identifier or ARN
+	Version string // a version number or "DRAFT"
+	Trace   bool
+}
+
+// invalidModel is a model whose configuration was refused. kritrim.New
+// reports the error; a direct call returns it.
+type invalidModel struct{ err error }
+
+func (m *invalidModel) Generate(context.Context, Request) (*Response, error) { return nil, m.err }
+func (m *invalidModel) Stream(context.Context, Request, func(Delta)) (*Response, error) {
+	return nil, m.err
+}
+
+// noGuardrail refuses ModelConfig.Guardrail on a provider without one, so a
+// guardrail is never silently ignored.
+func noGuardrail(provider string, c ModelConfig, m Model) Model {
+	if c.Guardrail != nil {
+		return &invalidModel{fmt.Errorf("kritrim: %s has no provider guardrail; ModelConfig.Guardrail is Bedrock only (use guard.Bedrock for other models)", provider)}
+	}
+	return m
+}
+
+// checkModels reports the first refused model configuration.
+func checkModels(models ...Model) error {
+	for _, m := range models {
+		if im, ok := m.(*invalidModel); ok {
+			return im.err
+		}
+	}
+	return nil
 }
 
 func (c ModelConfig) client() *http.Client {
@@ -104,6 +145,7 @@ type StatusError struct {
 	Body     string
 }
 
+// Error reports the provider, status and body.
 func (e *StatusError) Error() string {
 	return "kritrim: " + e.Provider + ": " + e.Status + ": " + strings.TrimSpace(e.Body)
 }

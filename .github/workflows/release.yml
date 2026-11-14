@@ -1,0 +1,55 @@
+name: release
+on:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.27"
+          check-latest: true
+      - name: test
+        run: go test -race ./...
+      - name: build
+        run: |
+          set -euo pipefail
+          ver="$GITHUB_REF_NAME"
+          mkdir -p dist
+          build() { # os arch cmd
+            ext=""
+            [ "$1" = windows ] && ext=.exe
+            CGO_ENABLED=0 GOOS="$1" GOARCH="$2" go build -trimpath -ldflags="-s -w -buildid=" \
+              -o "dist/${3}_${ver}_${1}_${2}${ext}" "./cmd/$3"
+          }
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64; do
+            build "${target%/*}" "${target#*/}" kritrim
+            build "${target%/*}" "${target#*/}" kritrim-evals
+          done
+          build linux amd64 kritrim-vmagent
+          build linux arm64 kritrim-vmagent
+          (cd dist && sha256sum -- * > SHA256SUMS)
+      - uses: sigstore/cosign-installer@v3
+      - name: sign checksums (keyless)
+        run: cosign sign-blob --yes --bundle dist/SHA256SUMS.sigstore.json dist/SHA256SUMS
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: "dist/*"
+      - name: release notes
+        run: |
+          awk -v v="## $GITHUB_REF_NAME" '
+            index($0, v) == 1 { on = 1; next }
+            on && /^## / { exit }
+            on { print }
+          ' CHANGELOG.md > notes.md
+          test -s notes.md || echo "See CHANGELOG.md." > notes.md
+      - name: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --title "kritrim $GITHUB_REF_NAME" --notes-file notes.md

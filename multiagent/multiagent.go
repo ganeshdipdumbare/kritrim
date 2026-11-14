@@ -20,12 +20,14 @@ type State struct {
 // NewState returns an empty graph state.
 func NewState() *State { return &State{values: map[string]any{}} }
 
+// Get returns the value for key, or nil.
 func (s *State) Get(key string) any {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.values[key]
 }
 
+// Set stores a value for the nodes that run after this one.
 func (s *State) Set(key string, v any) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -100,7 +102,7 @@ func (g *Graph) Run(ctx context.Context, prompt string) (*kritrim.Result, error)
 			return nil, fmt.Errorf("multiagent: node %s: %w", cur, err)
 		}
 		last = res
-		if res != nil && res.Stop == "interrupt" {
+		if res != nil && res.Stop == kritrim.StopInterrupt {
 			return res, nil
 		}
 		if g.ends[cur] || len(g.edges[cur]) == 0 {
@@ -172,7 +174,7 @@ func (s *Swarm) Run(ctx context.Context, prompt string, opts ...kritrim.Option) 
 		if err != nil {
 			return nil, err
 		}
-		if res.Stop == "interrupt" {
+		if res.Stop == kritrim.StopInterrupt {
 			return res, nil
 		}
 		target, _ := state.Get("handoff").(string)

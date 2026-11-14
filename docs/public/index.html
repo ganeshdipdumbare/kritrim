@@ -37,7 +37,7 @@
 <body data-page="introduction">
 <a class="skip" href="#main">Skip to content</a>
 
-<div class="banner"><a href="#status">kritrim now ships reasoning controls, Cedar-style authorization and chaos evals <b>See what's new →</b></a></div>
+<div class="banner"><a href="#status">kritrim v1.0 is stable: cloud and microVM sandboxes, guardrails, semantic memory and the evals CLI <b>See what's new →</b></a></div>
 
 <header class="topbar">
   <div class="in">
@@ -69,7 +69,7 @@
 <div class="shell">
 <aside class="side" id="side" aria-label="Documentation">
   <a class="version" href="https://github.com/ganeshdipdumbare/kritrim/blob/main/docs/ROADMAP.md" aria-label="Roadmap and releases">
-    <span class="vname">/kritrim</span><span class="vtag">v0.9.0</span>
+    <span class="vname">/kritrim</span><span class="vtag">v1.0.0</span>
   </a>
   <button class="sidesearch" type="button" data-search aria-label="Search docs">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
@@ -307,10 +307,8 @@ res, _ := front.Run(ctx, "My invoice shows the wrong VAT number")</code></pre></
   <section id="installation" class="page">
     <h1>Installation</h1>
     <p class="lede">kritrim needs Go 1.27 or newer and has no third-party dependencies.</p>
-    <div class="code" data-title="terminal"><pre><code class="language-bash">go get github.com/ganeshdipdumbare/kritrim@v0.9.0</code></pre></div>
-    <p>The repository is private. Tell Go and git once:</p>
-    <div class="code" data-title="terminal"><pre><code class="language-bash">go env -w GOPRIVATE=github.com/ganeshdipdumbare/*
-gh auth setup-git        # or use an SSH key</code></pre></div>
+    <div class="code" data-title="terminal"><pre><code class="language-bash">go get github.com/ganeshdipdumbare/kritrim@v1.0.0</code></pre></div>
+    <p>MIT licensed. Release binaries for <code>kritrim</code>, <code>kritrim-evals</code> and <code>kritrim-vmagent</code> are on the <a href="https://github.com/ganeshdipdumbare/kritrim/releases">releases page</a>, with a Sigstore-signed checksum file and build provenance; <a href="https://github.com/ganeshdipdumbare/kritrim/blob/main/SECURITY.md">SECURITY.md</a> shows how to verify them.</p>
     <h2>From a checkout</h2>
     <p>The suite runs offline; the mock model needs no key.</p>
     <div class="code" data-title="terminal"><pre><code class="language-bash">git clone https://github.com/ganeshdipdumbare/kritrim
@@ -321,7 +319,7 @@ go run ./examples/quickstart</code></pre></div>
     <p>This site is a static build. Regenerate <code>docs/public</code> with:</p>
     <div class="code" data-title="terminal"><pre><code class="language-bash">docs/build.sh
 python3 -m http.server 8080 -d docs/public</code></pre></div>
-    <div class="note"><b>Versioning</b><div><p>While the major version is 0, minor releases may break the API and patch releases only fix bugs. Every change is in <a href="https://github.com/ganeshdipdumbare/kritrim/blob/main/docs/ROADMAP.md">docs/ROADMAP.md</a>.</p></div></div>
+    <div class="note"><b>Versioning</b><div><p>kritrim follows semantic versioning. Within v1 nothing exported is removed or changed, interfaces you implement gain no methods, and stored sessions, audit logs and traces stay readable; <a href="https://github.com/ganeshdipdumbare/kritrim/blob/main/docs/API.md">docs/API.md</a> spells out the promise and CI checks it. Coming from v0.9? Read <a href="https://github.com/ganeshdipdumbare/kritrim/blob/main/docs/MIGRATING.md">docs/MIGRATING.md</a>. Every change is in the <a href="https://github.com/ganeshdipdumbare/kritrim/blob/main/CHANGELOG.md">changelog</a>.</p></div></div>
   </section>
 
   <section id="quickstart" class="page">
@@ -450,6 +448,15 @@ kritrim.Mock(kritrim.Turn{Text: "offline"})</code></pre></div>
 })</code></pre></div>
     <p><code>Budget</code> sets the thinking-token allowance exactly; the effort levels map to 1024, 4096 and 16384. <code>Include: true</code> streams the thinking back as <code>reasoning</code> events where the provider returns it.</p>
     <div class="note"><b>Thinking tokens are output tokens</b><div><p>They count against <code>MaxOutputTokens</code> and the run's budget. A budget that cannot hold the thinking allowance is refused before the call, rather than capped into a provider error. Anthropic requires its thinking blocks to come back with their signature before it will accept a tool result, so kritrim keeps them on the assistant message and replays them.</p></div></div>
+    <h2>Guardrails</h2>
+    <p>A provider guardrail screens what goes in and what comes out. For Bedrock it runs inside the Converse call; for any model, <code>guard.Bedrock</code> applies the same guardrail with ApplyGuardrail and fails closed.</p>
+    <div class="code" data-title="go"><pre><code class="language-go">model := kritrim.Bedrock("anthropic.claude-sonnet-5-5", kritrim.ModelConfig{
+	Guardrail: &kritrim.Guardrail{ID: "gr-123", Version: "1"},
+})
+
+// Any provider: prompts, replies and (with Tools) tool results.
+hooks, _ := guard.Bedrock(guard.BedrockConfig{ID: "gr-123", Version: "1", Tools: true})</code></pre></div>
+    <p>Other providers refuse <code>ModelConfig.Guardrail</code> at <code>New</code> instead of ignoring it. When any provider's safety system blocks a reply (Bedrock <code>guardrail_intervened</code>, OpenAI <code>content_filter</code>, Anthropic <code>refusal</code>, Gemini <code>SAFETY</code>), the run ends with <code>kritrim.StopGuardrail</code> and that reply's tool calls do not run.</p>
     <h2>Routing and fallback</h2>
     <p><code>Route</code> decides up front, per run. <code>Fallback</code> reacts to a failure. They compose — fallbacks apply to whatever <code>Route</code> chose, and the audit log records the model the run actually used.</p>
     <div class="code" data-title="go"><pre><code class="language-go">a, _ := kritrim.New(kritrim.Config{
@@ -546,7 +553,7 @@ kritrim.AskUser()</code></pre></div>
     <p><code>Stream</code> returns an <code>iter.Seq2</code>. Breaking out early cancels the run and cleans up.</p>
     <div class="code" data-title="go"><pre><code class="language-go">for e, err := range a.Stream(ctx, "A haiku about Lisbon") {
 	if err != nil { break }
-	if e.Type == "text" { fmt.Print(e.Text) }
+	if e.Type == kritrim.EventText { fmt.Print(e.Text) }
 }</code></pre></div>
     <div class="table"><table>
       <thead><tr><th>Event</th><th>Fields</th></tr></thead>
@@ -557,10 +564,12 @@ kritrim.AskUser()</code></pre></div>
         <tr><td><code>tool_result</code></td><td><code>ToolResult</code></td></tr>
         <tr><td><code>approval</code></td><td><code>Approval</code></td></tr>
         <tr><td><code>step_end</code></td><td><code>Usage</code></td></tr>
+        <tr><td><code>interrupt</code></td><td><code>Interrupts</code> (the run paused for approval)</td></tr>
         <tr><td><code>finish</code></td><td><code>Usage</code></td></tr>
         <tr><td><code>error</code></td><td><code>Err</code></td></tr>
       </tbody>
     </table></div>
+    <p>Every type is a constant (<code>kritrim.EventText</code>, <code>EventToolCall</code>, …, <code>EventInterrupt</code>), and so is every <code>Result.Stop</code>: <code>StopDone</code>, <code>StopMaxSteps</code>, <code>StopInterrupt</code>, <code>StopStopped</code>, <code>StopHook</code>, <code>StopGuardrail</code>.</p>
     <p>Need a callback without the iterator? <code>kritrim.OnEvent(fn)</code> attaches to <code>Run</code>.</p>
   </section>
 
@@ -695,6 +704,7 @@ fmt.Println(trip.City, trip.Packing)</code></pre></div>
       <div class="card"><h3>No inherited credentials</h3><p>Shell commands, MCP stdio servers and local boxes start with a minimal environment (<code>PATH</code>, <code>HOME</code>, locale, temp dir). Your API keys never reach them; pass extras with <code>ShellConfig.Env</code> or <code>MCPConfig.Env</code>.</p></div>
       <div class="card"><h3>Symlink-safe files</h3><p>File tools open their root with <code>os.Root</code>: a symlink inside the root cannot read or write outside it.</p></div>
       <div class="card"><h3>Validated arguments</h3><p>Tool arguments are checked against the tool schema before the call, so a model cannot pass types, values or fields the tool did not declare.</p></div>
+      <div class="card"><h3>Guardrails</h3><p>A Bedrock guardrail can screen every call, inside Converse or for any model with <code>guard.Bedrock</code>. A blocked reply ends the run with <code>StopGuardrail</code> and its tool calls never run.</p></div>
       <div class="card"><h3>Audit</h3><p>One hash-chained JSON line per model, tool and approval. With <code>AuditKey</code> the chain is HMAC-signed and a signed head detects truncation.</p></div>
     </div>
     <h2>Limits</h2>
@@ -713,6 +723,21 @@ a, _ := kritrim.New(kritrim.Config{
 	Hooks: kritrim.Chain(deny, guard.PII("email", "credit_card"), trace.OTel(otelCfg)),
 })</code></pre></div>
     <p><code>kritrim.Chain</code> combines any number of hook sets. They run in the order given; a Before hook that errors or denies stops the chain.</p>
+    <h2>Hooks that steer</h2>
+    <p>A hook can ask for another answer, reroute a tool call, or end the run, without forking the loop:</p>
+    <div class="code" data-title="go"><pre><code class="language-go">Hooks: kritrim.Hooks{
+	AfterModel: func(ctx context.Context, e *kritrim.ModelEvent) {
+		if strings.Contains(e.Response.Text, "TODO") { e.Retry = true } // capped by Retry.Max
+	},
+	BeforeTool: func(ctx context.Context, e *kritrim.ToolEvent) error {
+		if e.Call.Name == "web_search" { e.Swap = "internal_search" }
+		return nil
+	},
+	AfterTool: func(ctx context.Context, e *kritrim.ToolEvent) {
+		if e.Result.IsError { e.End = "tool failed" } // Result.Stop == StopHook
+	},
+}</code></pre></div>
+    <p>A swapped call goes through approval, argument validation and <code>BeforeTool</code> again, so a swap cannot skip a check, and it cannot swap a second time.</p>
     <div class="note warn"><b>Trust boundary</b><div><p>The broker governs built-in tools. Your own Go tools are code you compiled into the binary. Put untrusted work in a sandbox.</p></div></div>
   </section>
 
@@ -761,7 +786,7 @@ a.Run(ctx, "refund order A-17", kritrim.User("u-7"), kritrim.Roles("support"))</
 
   <section id="sandboxes" class="page">
     <h1>Sandboxes</h1>
-    <p class="lede">Run shell and file tools in Docker, on a remote host over SSH, or locally for development.</p>
+    <p class="lede">Run shell and file tools in Docker, a cloud sandbox, a Firecracker microVM, on a remote host over SSH, or locally for development.</p>
     <div class="code" data-title="go"><pre><code class="language-go">a, _ := kritrim.New(kritrim.Config{
 	Model: model,
 	Tools: []kritrim.Tool{
@@ -799,8 +824,25 @@ box, err := ssh.New(ssh.Config{
 	IdentityFile: "~/.ssh/agent_key",
 })</code></pre></div>
     <p>Host-key checking is enforced by default; extra SSH options are filtered to block directives that run local commands.</p>
-    <h2>Third-party providers</h2>
-    <p>Implement <code>Sandbox</code>, <code>Machine</code> and <code>Process</code>. Docker, Local and SSH are in the repository; every adapter must pass <code>sandbox/sandboxtest</code>.</p>
+    <h2>Cloud and microVM sandboxes</h2>
+    <div class="code" data-title="go"><pre><code class="language-go">box, _ := e2b.New(e2b.Config{})                   // E2B_API_KEY
+box, _ := tensorlake.New(tensorlake.Config{})     // TENSORLAKE_API_KEY
+box, _ := daytona.New(daytona.Config{})           // DAYTONA_API_KEY
+box, _ := microsandbox.New(microsandbox.Config{}) // the msb CLI
+box, _ := firecracker.New(firecracker.Config{Kernel: "vmlinux", RootFS: "rootfs.ext4"})</code></pre></div>
+    <div class="table"><table>
+      <thead><tr><th>Adapter</th><th>Tools in a sandbox</th><th>Sealed agent</th><th>Network</th></tr></thead>
+      <tbody>
+        <tr><td><code>sandbox/e2b</code></td><td>yes</td><td>yes</td><td>off by default</td></tr>
+        <tr><td><code>sandbox/tensorlake</code></td><td>yes</td><td>yes</td><td>off by default</td></tr>
+        <tr><td><code>sandbox/microsandbox</code></td><td>yes</td><td>yes</td><td><code>--no-net</code> by default</td></tr>
+        <tr><td><code>sandbox/firecracker</code></td><td>yes</td><td>yes</td><td>no NIC unless a TAP device is set</td></tr>
+        <tr><td><code>sandbox/daytona</code></td><td>yes</td><td>no (no process stdio)</td><td>blocked by default</td></tr>
+      </tbody>
+    </table></div>
+    <p>API keys stay on the host. Firecracker needs Linux with KVM and a root filesystem that contains the guest agent (<code>kritrim vmagent build</code>). Each adapter passes <code>sandbox/sandboxtest</code> against a fake of its provider's protocol, and runs it live when credentials are set.</p>
+    <h2>Your own adapter</h2>
+    <p>Implement <code>Sandbox</code>, <code>Machine</code> and <code>Process</code> and pass <code>sandbox/sandboxtest</code>. <code>Start</code>'s context bounds starting the process only; the process runs until it exits or is killed. A provider without process stdio returns <code>errors.ErrUnsupported</code> from <code>Start</code> and tests with <code>Options{NoStart: true}</code>.</p>
   </section>
 
   <section id="sealed" class="page">
@@ -883,11 +925,18 @@ http.ListenAndServe(":9000", srv)</code></pre></div>
 	PushURL: "https://app.example.com/a2a/events", PushToken: "shared",
 })
 res, _ := c.Run(ctx, "ticket 42")
-tool := c.AsTool("triage", "Routes a ticket")</code></pre></div>
+tool := c.AsTool("triage", "Routes a ticket")
+
+// Files: images reach the model, text files are inlined.
+res, _ = c.Run(ctx, "summarize", a2a.Files(a2a.File{Name: "notes.md", MimeType: "text/markdown", Bytes: notes}))
+
+// A remote agent as a graph node.
+g, _ := multiagent.Sequence(multiagent.Step{Name: "triage", Node: c.Node()})</code></pre></div>
     <h2>What is implemented</h2>
     <ul>
       <li>Agent card, <code>message/send</code>, <code>message/stream</code>, <code>tasks/get</code>, <code>tasks/cancel</code>.</li>
-      <li>Per-context agents with an LRU, text and data parts, and interrupt → <code>input-required</code> → resume.</li>
+      <li>Per-context agents with an LRU, text, data and file parts, and interrupt → <code>input-required</code> → resume.</li>
+      <li>File parts: images go to the model, text files are inlined in the prompt, other types are refused. A file URI is fetched only from a host in <code>ServerConfig.FileHosts</code>, checked at dial time, without redirects, within <code>MaxFileBytes</code>.</li>
       <li>Push notifications with a token, and <code>tasks/pushNotificationConfig/{set,get,list,delete}</code>. Push URLs must be public http(s) (checked at set time and at dial time), redirects are not followed, and header values are sent as given: <code>secret://</code> is never resolved on the server.</li>
       <li>Bearer auth (constant-time; an empty token is refused) and OAuth client credentials.</li>
       <li>Per-caller isolation: with <code>a2a.Tokens(map[token]principal)</code> (or any <code>Auth</code> that implements <code>Principal</code>), each task, context, conversation and push config belongs to the caller that created it. Other callers get "task not found". With a single <code>Bearer</code> token, all callers share one principal.</li>
@@ -927,14 +976,26 @@ res, _ := s.Run(ctx, "draft the launch post")</code></pre></div>
 		s.AsTool("content_team", "Researches and drafts a post"),
 	},
 })</code></pre></div>
-    <p>Workflows are plain Go; there is no extra primitive.</p>
+    <h2>Presets</h2>
+    <p>Two shapes come up often enough to have a constructor. Both build an ordinary graph you can extend, cap or hand over with <code>AsTool</code>.</p>
+    <div class="code" data-title="go"><pre><code class="language-go">pipeline, _ := multiagent.Sequence(
+	multiagent.Step{Name: "draft", Node: multiagent.AgentNode(writer)},
+	multiagent.Step{Name: "review", Node: multiagent.AgentNode(reviewer)},
+)
+router, _ := multiagent.Router(classify, map[string]multiagent.Node{
+	"billing": multiagent.AgentNode(billing),
+	"tech":    remote.Node(), // an A2A agent
+})</code></pre></div>
+    <p>A router whose classifier names an unknown route fails the run instead of guessing. Anything else is plain Go; there is no extra workflow primitive.</p>
   </section>
 
   <section id="triggers" class="page">
     <h1>Triggers</h1>
     <p class="lede">Run an agent on a schedule or from a signed webhook.</p>
     <div class="code" data-title="go"><pre><code class="language-go">sched, _ := trigger.NewScheduler(agent,
-	trigger.Schedule{Every: time.Hour, Thread: "daily", Prompt: "summarize yesterday"})
+	trigger.Schedule{Name: "digest", Cron: "0 9 * * mon-fri", Location: berlin, Thread: "daily", Prompt: "summarize yesterday"},
+	trigger.Schedule{Name: "poll", Every: 10 * time.Minute, Thread: "poll", Prompt: "check the queue"})
+sched.SetStore(store) // shared by every instance: each tick runs once
 sched.Start(ctx)
 defer sched.Close()
 
@@ -949,7 +1010,8 @@ ts := time.Now()
 req.Header.Set(trigger.TimestampHeader, strconv.FormatInt(ts.Unix(), 10))
 req.Header.Set(trigger.IdempotencyHeader, "evt-123")
 req.Header.Set(trigger.SignatureHeader, trigger.Sign(secret, ts, "evt-123", body))</code></pre></div>
-    <p>The HMAC-SHA256 signature covers a versioned, length-prefixed encoding of the timestamp, the idempotency key and the body. Requests outside <code>Tolerance</code> (default 5 minutes) are refused, so a captured request cannot be replayed later or under a new key. Each delivery runs once: duplicates, including concurrent ones, get the first result, and a delivery without a key is identified by its signature. Reusing a key for a different body returns 409. Deliveries are remembered for <code>DedupeTTL</code>; when <code>MaxEntries</code> is full of unexpired ones the webhook answers 503 with <code>Retry-After</code> rather than forgetting any. Errors are logged, not returned. A schedule skips a tick when its previous run is still going.</p>
+    <p>The HMAC-SHA256 signature covers a versioned, length-prefixed encoding of the timestamp, the idempotency key and the body. Requests outside <code>Tolerance</code> (default 5 minutes) are refused, so a captured request cannot be replayed later or under a new key. Each delivery runs once: duplicates, including concurrent ones, get the first result, and a delivery without a key is identified by its signature. Reusing a key for a different body returns 409. Deliveries are remembered for <code>DedupeTTL</code> in a <code>DedupeStore</code>: <code>trigger.MemoryDedupe(n)</code> for one process (when full of unexpired deliveries it answers 503 with <code>Retry-After</code> rather than forgetting any), or <code>trigger.SQLDedupe(db, cfg)</code> on Postgres, SQLite or MySQL when several instances serve the webhook. Errors are logged, not returned.</p>
+    <p>Schedules take a five-field cron expression or a descriptor such as <code>@daily</code>, read in <code>Location</code>, or an <code>Every</code> interval aligned to the epoch so instances agree on when a tick is due. Names (default: the thread) must be unique. A schedule skips a tick when its previous run is still going.</p>
   </section>
 
   <section id="evals" class="page">
@@ -977,12 +1039,19 @@ fmt.Print(report.Summary())</code></pre></div>
         <tr><td>Evaluators</td><td>exact, contains, regex, JSON fields, tool trajectory, tool parameters, no-error, steps, tokens, duration, LLM judge, built-in criteria</td></tr>
         <tr><td>Chaos</td><td><code>Chaos</code> fails tools on purpose; <code>Resilient</code>, <code>FailedTools</code></td></tr>
         <tr><td>Detectors</td><td>run error, empty output, max steps, pending approval, tool error, rejected approval, repeated call</td></tr>
-        <tr><td>Red team</td><td><code>RunRedTeam</code>: injection, exfiltration, destructive tools</td></tr>
+        <tr><td>Red team</td><td><code>RunRedTeam</code>: direct and indirect injection, exfiltration, secret placeholders, approval bypass, destructive tools</td></tr>
+        <tr><td>Recorded traffic</td><td><code>FromTrace</code> rebuilds runs from <code>trace.JSON</code>; <code>Experiment.Score</code> grades them</td></tr>
         <tr><td>Simulation</td><td><code>GenerateCases</code>, <code>Simulate</code> a model-played user, <code>SimulatedTools</code></td></tr>
       </tbody>
     </table></div>
-    <div class="code" data-title="terminal"><pre><code class="language-bash">go run ./cmd/kritrim-evals report report.json
-go run ./cmd/kritrim-evals diagnose report.json</code></pre></div>
+    <h2>The CLI</h2>
+    <p><code>kritrim-evals</code> runs a suite without Go glue code. <code>run</code> starts your agent program once per case with the input on stdin; the program prints the answer, or a <code>kritrim.Result</code> as JSON to keep tool calls for trajectory checks.</p>
+    <div class="code" data-title="terminal"><pre><code class="language-bash">kritrim-evals generate -model anthropic:claude-sonnet-5-5 -context agent.md -n 10 > cases.jsonl
+kritrim-evals run -cases cases.jsonl -contains -detect -o report.json -- go run ./myagent
+kritrim-evals traces -judge faithful,achieved -judge-model openai:gpt-4.1 trace.jsonl
+kritrim-evals report report.json
+kritrim-evals diagnose report.json</code></pre></div>
+    <p>Every command exits 1 when a case fails, so it gates CI as it is. <code>traces</code> scores production traffic recorded with <code>trace.JSON(w, trace.Content())</code>.</p>
     <h2>Built-in criteria</h2>
     <p>Writing a good rubric is most of the work of an LLM judge. <code>evals.Judge</code> takes one of twelve ready-made ones:</p>
     <div class="code" data-title="go"><pre><code class="language-go">Evaluators: []evals.Evaluator{
@@ -1032,6 +1101,10 @@ a, _ := kritrim.New(kritrim.Config{
 	Tools: memory.Tools(store),                 // remember, recall
 	Hooks: memory.Inject(store, 5),             // recall into the system prompt
 })</code></pre></div>
+    <p>Recall is lexical by default. <code>memory.NewSemantic</code> adds embedding search to any store, ranking by meaning blended with the keyword score:</p>
+    <div class="code" data-title="go"><pre><code class="language-go">store, _ := memory.NewSemantic(base, memory.OpenAIEmbedder("text-embedding-3-small"),
+	memory.SemanticConfig{Dir: ".agent/memory"}) // vectors survive a restart</code></pre></div>
+    <p>Embedders: <code>OpenAIEmbedder</code> (and any compatible API), <code>OllamaEmbedder</code>, <code>GeminiEmbedder</code>, <code>BedrockEmbedder</code>. No vector database; what you remember is sent to the embedding provider.</p>
     <h2>Skills</h2>
     <div class="code" data-title="go"><pre><code class="language-go">sk, _ := skills.Load("./skills")
 a, _ := kritrim.New(kritrim.Config{
@@ -1090,7 +1163,7 @@ if err := kritrim.VerifyAudit(".agent/audit.jsonl", kritrim.AuditKey(key)); err 
 		Service:  "support-agent",
 	}),
 })</code></pre></div>
-    <p><code>trace.OTel</code> sends OTLP/HTTP traces, metrics and logs. <code>trace.OTLP</code> is traces only; <code>trace.JSON(w)</code> writes one line per event.</p>
+    <p><code>trace.OTel</code> sends OTLP/HTTP traces, metrics and logs. <code>trace.OTLP</code> is traces only; <code>trace.JSON(w)</code> writes one line per event with its run id and no conversation text. <code>trace.JSON(w, trace.Content())</code> adds prompts, replies, tool arguments and results, which makes the trace scorable offline and as sensitive as the conversation.</p>
     <div class="table"><table>
       <thead><tr><th>Metric</th><th>Attributes</th></tr></thead>
       <tbody>
@@ -1125,6 +1198,8 @@ if err := kritrim.VerifyAudit(".agent/audit.jsonl", kritrim.AuditKey(key)); err 
         <tr><td><code>kritrim.KeepWindow / Summarize / SummarizeWith</code></td><td>context strategies</td></tr>
         <tr><td><code>kritrim.EstimateTokens(msgs)</code></td><td>the estimate the budget uses</td></tr>
         <tr><td><code>kritrim.WebFetch / Todos / Python</code></td><td>read a page as text, keep a plan, run sandboxed Python</td></tr>
+        <tr><td><code>kritrim.Event* / Stop*</code></td><td>event types and stop reasons</td></tr>
+        <tr><td><code>kritrim.Guardrail</code></td><td>a Bedrock guardrail on <code>ModelConfig</code></td></tr>
       </tbody>
     </table></div>
     <h2>Config</h2>
@@ -1159,22 +1234,23 @@ if err := kritrim.VerifyAudit(".agent/audit.jsonl", kritrim.AuditKey(key)); err 
     <div class="table"><table>
       <thead><tr><th>Import</th><th>What it adds</th></tr></thead>
       <tbody>
-        <tr><td><code>.../a2a</code></td><td>A2A client, server, tasks, push, OAuth</td></tr>
+        <tr><td><code>.../a2a</code></td><td>A2A client, server, tasks, push, OAuth, file parts, graph nodes</td></tr>
         <tr><td><code>.../authz</code></td><td>Cedar-style tool authorization per caller and argument</td></tr>
         <tr><td><code>.../evals</code></td><td>experiments, evaluators, criteria, chaos, detectors, red team, simulation</td></tr>
         <tr><td><code>.../mcp</code> (core config)</td><td>stdio and Streamable HTTP MCP</td></tr>
-        <tr><td><code>.../multiagent</code></td><td>graph and swarm, each usable as a tool</td></tr>
-        <tr><td><code>.../trigger</code></td><td>scheduler and signed webhooks</td></tr>
-        <tr><td><code>.../memory</code>, <code>.../skills</code>, <code>.../plugin</code></td><td>long-term memory, skills, inject/steer/offload, goal loop</td></tr>
-        <tr><td><code>.../guard</code>, <code>.../trace</code></td><td>PII and prompt policy, JSON/OTLP/OTel</td></tr>
-        <tr><td><code>.../sandbox/ssh</code></td><td>remote sandbox</td></tr>
+        <tr><td><code>.../multiagent</code></td><td>graph, swarm, Sequence and Router presets, each usable as a tool</td></tr>
+        <tr><td><code>.../trigger</code></td><td>cron and interval schedules, signed webhooks, shared dedupe stores</td></tr>
+        <tr><td><code>.../memory</code>, <code>.../skills</code>, <code>.../plugin</code></td><td>lexical and semantic memory, skills, inject/steer/offload, goal loop</td></tr>
+        <tr><td><code>.../guard</code>, <code>.../trace</code></td><td>PII, prompt policy and Bedrock guardrails; JSON/OTLP/OTel</td></tr>
+        <tr><td><code>.../sandbox/ssh</code>, <code>/e2b</code>, <code>/tensorlake</code>, <code>/daytona</code>, <code>/microsandbox</code>, <code>/firecracker</code></td><td>remote, cloud and microVM sandboxes</td></tr>
+        <tr><td><code>.../sandbox/sandboxtest</code></td><td>the conformance suite for your own adapter</td></tr>
       </tbody>
     </table></div>
   </section>
 
   <section id="status" class="page">
     <h1>Status and roadmap</h1>
-    <p class="lede">What is shipped, what is planned, and what is deliberately out.</p>
+    <p class="lede">v1.0 is stable. What shipped, and what is deliberately out.</p>
     <div class="table"><table>
       <thead><tr><th>Area</th><th>Status</th></tr></thead>
       <tbody>
@@ -1189,9 +1265,11 @@ if err := kritrim.VerifyAudit(".agent/audit.jsonl", kritrim.AuditKey(key)); err 
         <tr><td>Reasoning controls, per-run routing, context strategies, signed sessions</td><td>shipped</td></tr>
         <tr><td>Cedar-style authorization, goal loop, graph/swarm as tools</td><td>shipped</td></tr>
         <tr><td>Web fetch, todos and sandboxed python tools; eval criteria and chaos testing</td><td>shipped</td></tr>
-        <tr><td>Cloud sandbox adapters (E2B, microsandbox, Firecracker, Tensorlake)</td><td>planned</td></tr>
-        <tr><td>A2A file parts, provider guardrails, embedding-backed memory search</td><td>planned</td></tr>
-        <tr><td>Evals CLI run/generate, remote traces</td><td>planned</td></tr>
+        <tr><td>Sandbox adapters: E2B, Tensorlake, Daytona, microsandbox, Firecracker</td><td>shipped in v1.0</td></tr>
+        <tr><td>A2A file parts, provider guardrails, embedding-backed memory search</td><td>shipped in v1.0</td></tr>
+        <tr><td>Hooks that retry, swap and end; cron schedules; shared dedupe stores</td><td>shipped in v1.0</td></tr>
+        <tr><td>Evals CLI generate/run/traces, recorded-trace scoring</td><td>shipped in v1.0</td></tr>
+        <tr><td>Stable API, signed releases, migration guide, benchmarks</td><td>shipped in v1.0</td></tr>
         <tr><td>Voice/bidi, workflow primitive, deploy guides, declarative config</td><td>out of scope</td></tr>
       </tbody>
     </table></div>

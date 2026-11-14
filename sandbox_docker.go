@@ -133,15 +133,7 @@ func (m *dockerMachine) Exec(ctx context.Context, r ExecRequest) (ExecResult, er
 	if len(r.Command) == 0 {
 		return ExecResult{}, errors.New("kritrim: empty command")
 	}
-	args := []string{"exec"}
-	if r.Dir != "" {
-		args = append(args, "-w", r.Dir)
-	}
-	for _, e := range r.Env {
-		args = append(args, "-e", e)
-	}
-	args = append(args, m.name)
-	args = append(args, r.Command...)
+	args := dockerExecArgs(m.name, r)
 	out, errb, code, err := dockerRun(ctx, args, r.Stdin)
 	return ExecResult{Stdout: out, Stderr: errb, Exit: code}, err
 }
@@ -150,15 +142,7 @@ func (m *dockerMachine) ExecStream(ctx context.Context, r ExecRequest, emit func
 	if len(r.Command) == 0 {
 		return ExecResult{}, errors.New("kritrim: empty command")
 	}
-	args := []string{"exec"}
-	if r.Dir != "" {
-		args = append(args, "-w", r.Dir)
-	}
-	for _, e := range r.Env {
-		args = append(args, "-e", e)
-	}
-	args = append(args, m.name)
-	args = append(args, r.Command...)
+	args := dockerExecArgs(m.name, r)
 	cmd := exec.CommandContext(ctx, "docker", args...)
 	if r.Stdin != nil {
 		cmd.Stdin = bytes.NewReader(r.Stdin)
@@ -207,6 +191,23 @@ func (m *dockerMachine) ExecStream(ctx context.Context, r ExecRequest, emit func
 	return ExecResult{Stdout: o.String(), Stderr: e.String(), Exit: code}, nil
 }
 
+// dockerExecArgs builds `docker exec` for a request. Without -i docker
+// never forwards stdin, so a command reading it would see nothing.
+func dockerExecArgs(name string, r ExecRequest) []string {
+	args := []string{"exec"}
+	if r.Stdin != nil {
+		args = append(args, "-i")
+	}
+	if r.Dir != "" {
+		args = append(args, "-w", r.Dir)
+	}
+	for _, e := range r.Env {
+		args = append(args, "-e", e)
+	}
+	args = append(args, name)
+	return append(args, r.Command...)
+}
+
 func (m *dockerMachine) Start(ctx context.Context, r StartRequest) (Process, error) {
 	if len(r.Command) == 0 {
 		return nil, errors.New("kritrim: empty command")
@@ -220,7 +221,8 @@ func (m *dockerMachine) Start(ctx context.Context, r StartRequest) (Process, err
 	}
 	args = append(args, m.name)
 	args = append(args, r.Command...)
-	cmd := exec.CommandContext(ctx, "docker", args...)
+	// Not CommandContext: the process outlives the start context.
+	cmd := exec.Command("docker", args...)
 	in, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, err

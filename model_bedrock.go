@@ -3,17 +3,13 @@ package kritrim
 import (
 	"bytes"
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
-	"os"
-	"sort"
 	"strings"
-	"time"
+
+	"github.com/ganeshdipdumbare/kritrim/internal/awssig"
 )
 
 // Bedrock returns an Amazon Bedrock model using the Converse API. Region and
@@ -21,23 +17,10 @@ import (
 // Streaming falls back to one text delta (Converse is non-streaming here).
 func Bedrock(model string, cfg ...ModelConfig) Model {
 	c := first(cfg)
-	if c.Region == "" {
-		c.Region = os.Getenv("AWS_REGION")
-	}
-	if c.Region == "" {
-		c.Region = os.Getenv("AWS_DEFAULT_REGION")
-	}
-	if c.Region == "" {
-		c.Region = "us-east-1"
-	}
-	if c.AccessKey == "" {
-		c.AccessKey = os.Getenv("AWS_ACCESS_KEY_ID")
-	}
-	if c.SecretKey == "" {
-		c.SecretKey = os.Getenv("AWS_SECRET_ACCESS_KEY")
-	}
-	if c.SessionToken == "" {
-		c.SessionToken = os.Getenv("AWS_SESSION_TOKEN")
+	creds := awsCredentials(c)
+	c.Region, c.AccessKey, c.SecretKey, c.SessionToken = creds.Region, creds.AccessKey, creds.SecretKey, creds.SessionToken
+	if g := c.Guardrail; g != nil && (g.ID == "" || g.Version == "") {
+		return &invalidModel{fmt.Errorf("kritrim: bedrock: Guardrail needs ID and Version")}
 	}
 	return &bedrockModel{name: model, cfg: c}
 }
@@ -66,7 +49,7 @@ func (m *bedrockModel) Generate(ctx context.Context, req Request) (*Response, er
 		return nil, err
 	}
 	hreq.Header.Set("Content-Type", "application/json")
-	if err := signAWS(hreq, body, "bedrock", m.cfg.Region, m.cfg.AccessKey, m.cfg.SecretKey, m.cfg.SessionToken); err != nil {
+	if err := awssig.Sign(hreq, body, "bedrock", awsCredentials(m.cfg)); err != nil {
 		return nil, err
 	}
 	resp, err := m.cfg.client().Do(hreq)
@@ -137,7 +120,14 @@ type brRequest struct {
 		Tools      []brToolSpec `json:"tools"`
 		ToolChoice any          `json:"toolChoice,omitempty"`
 	} `json:"toolConfig,omitempty"`
-	AdditionalModelRequestFields map[string]any `json:"additionalModelRequestFields,omitempty"`
+	AdditionalModelRequestFields map[string]any     `json:"additionalModelRequestFields,omitempty"`
+	GuardrailConfig              *brGuardrailConfig `json:"guardrailConfig,omitempty"`
+}
+
+type brGuardrailConfig struct {
+	ID      string `json:"guardrailIdentifier"`
+	Version string `json:"guardrailVersion"`
+	Trace   string `json:"trace,omitempty"`
 }
 
 type brResponse struct {
@@ -206,6 +196,12 @@ func (m *bedrockModel) request(req Request) brRequest {
 		}
 		out.ToolConfig = tc
 	}
+	if g := m.cfg.Guardrail; g != nil {
+		out.GuardrailConfig = &brGuardrailConfig{ID: g.ID, Version: g.Version}
+		if g.Trace {
+			out.GuardrailConfig.Trace = "enabled"
+		}
+	}
 	return out
 }
 
@@ -252,75 +248,19 @@ func (m *bedrockModel) parse(raw brResponse, req Request) *Response {
 	}
 	switch raw.StopReason {
 	case "tool_use":
-		out.Stop = "tool_calls"
+		out.Stop = StopToolCalls
 	case "max_tokens":
-		out.Stop = "length"
+		out.Stop = StopLength
+	case "guardrail_intervened", "content_filtered":
+		out.Stop = StopGuardrail
 	default:
-		out.Stop = "stop"
+		out.Stop = StopDone
 	}
 	return out
 }
 
-// signAWS adds a SigV4 Authorization header.
-func signAWS(req *http.Request, body []byte, service, region, access, secret, token string) error {
-	if access == "" || secret == "" {
-		return fmt.Errorf("kritrim: AWS credentials are not set")
-	}
-	now := time.Now().UTC()
-	amzDate := now.Format("20060102T150405Z")
-	date := now.Format("20060102")
-	payloadHash := sha256Hex(body)
-	req.Header.Set("X-Amz-Date", amzDate)
-	req.Header.Set("X-Amz-Content-Sha256", payloadHash)
-	if token != "" {
-		req.Header.Set("X-Amz-Security-Token", token)
-	}
-	headers := map[string]string{
-		"content-type":         req.Header.Get("Content-Type"),
-		"host":                 req.URL.Host,
-		"x-amz-content-sha256": payloadHash,
-		"x-amz-date":           amzDate,
-	}
-	if token != "" {
-		headers["x-amz-security-token"] = token
-	}
-	var keys []string
-	for k := range headers {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	var canonicalHeaders strings.Builder
-	for _, k := range keys {
-		canonicalHeaders.WriteString(k + ":" + strings.TrimSpace(headers[k]) + "\n")
-	}
-	signed := strings.Join(keys, ";")
-	canonical := strings.Join([]string{
-		req.Method,
-		req.URL.EscapedPath(),
-		req.URL.Query().Encode(),
-		canonicalHeaders.String(),
-		signed,
-		payloadHash,
-	}, "\n")
-	scope := date + "/" + region + "/" + service + "/aws4_request"
-	toSign := "AWS4-HMAC-SHA256\n" + amzDate + "\n" + scope + "\n" + sha256Hex([]byte(canonical))
-	key := hmacSHA256([]byte("AWS4"+secret), date)
-	key = hmacSHA256(key, region)
-	key = hmacSHA256(key, service)
-	key = hmacSHA256(key, "aws4_request")
-	sig := hex.EncodeToString(hmacSHA256(key, toSign))
-	req.Header.Set("Authorization", "AWS4-HMAC-SHA256 Credential="+access+"/"+scope+
-		", SignedHeaders="+signed+", Signature="+sig)
-	return nil
-}
-
-func sha256Hex(b []byte) string {
-	sum := sha256.Sum256(b)
-	return hex.EncodeToString(sum[:])
-}
-
-func hmacSHA256(key []byte, s string) []byte {
-	mac := hmac.New(sha256.New, key)
-	mac.Write([]byte(s))
-	return mac.Sum(nil)
+// awsCredentials is the ModelConfig's AWS fields, completed from the
+// environment.
+func awsCredentials(c ModelConfig) awssig.Credentials {
+	return awssig.Credentials{Region: c.Region, AccessKey: c.AccessKey, SecretKey: c.SecretKey, SessionToken: c.SessionToken}.FromEnv()
 }

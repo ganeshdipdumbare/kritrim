@@ -44,7 +44,7 @@ func asTool(name, description string, run func(context.Context, string) (*kritri
 		if err != nil {
 			return "", err
 		}
-		if res.Stop == "interrupt" {
+		if res.Stop == kritrim.StopInterrupt {
 			return "", fmt.Errorf("%s needs an approval it cannot ask for here; tell the user", name)
 		}
 		return res.Text, nil

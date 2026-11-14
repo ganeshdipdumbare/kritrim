@@ -29,8 +29,9 @@ Requires **Go 1.27** (build servers with 1.27.4 or later for the
 go get github.com/ganeshdipdumbare/kritrim
 ```
 
-Private repository: run `go env -w GOPRIVATE=github.com/ganeshdipdumbare/*`
-once, and `gh auth setup-git` (or use an SSH key).
+kritrim follows semantic versioning: v1 keeps its API stable (see
+[`docs/API.md`](docs/API.md)), and [`docs/MIGRATING.md`](docs/MIGRATING.md)
+covers the move from v0.9. MIT licensed.
 
 ## The core API
 
@@ -143,6 +144,22 @@ needs its thinking blocks replayed with their signature on the next call, so
 kritrim keeps them on the assistant message and sends them back — without
 that, a reasoning model with tools is rejected mid-conversation.
 
+### Guardrails
+
+```go
+kritrim.Bedrock("anthropic.claude-sonnet-5-5", kritrim.ModelConfig{
+    Guardrail: &kritrim.Guardrail{ID: "gr-123", Version: "1"},
+})
+hooks, _ := guard.Bedrock(guard.BedrockConfig{ID: "gr-123", Version: "1", Tools: true}) // any model
+```
+
+`ModelConfig.Guardrail` runs a Bedrock guardrail inside the Converse call;
+other providers refuse it at `New` rather than ignore it. `guard.Bedrock`
+checks prompts, replies and tool results of any model with ApplyGuardrail
+and fails closed. When a provider's safety system blocks a reply (Bedrock,
+OpenAI `content_filter`, Anthropic `refusal`, Gemini `SAFETY`), the run ends
+with `StopGuardrail` and that reply's tool calls are not run.
+
 ### Routing and fallback
 
 ```go
@@ -200,23 +217,26 @@ stdin: no shell, nothing to quote.
 for e, err := range a.Stream(ctx, "Plan a trip") {
     if err != nil { break }
     switch e.Type {
-    case "text":        fmt.Print(e.Text)
-    case "tool_call":   fmt.Println("->", e.ToolCall.Name)
-    case "tool_result": fmt.Println("<-", e.ToolResult.Content)
-    case "approval":    fmt.Println("?", e.Approval.Message)
+    case kritrim.EventText:       fmt.Print(e.Text)
+    case kritrim.EventToolCall:   fmt.Println("->", e.ToolCall.Name)
+    case kritrim.EventToolResult: fmt.Println("<-", e.ToolResult.Content)
+    case kritrim.EventApproval:   fmt.Println("?", e.Approval.Message)
     }
 }
 ```
 
-Event types: `text`, `reasoning`, `tool_call`, `tool_result`, `approval`,
-`step_start`, `step_end`, `finish`, `interrupt`, `error`. Breaking out early
-cancels the run.
+Event types are constants: `EventText`, `EventReasoning`, `EventToolCall`,
+`EventToolResult`, `EventApproval`, `EventStepStart`, `EventStepEnd`,
+`EventFinish`, `EventInterrupt` (with `Event.Interrupts`) and `EventError`.
+`Result.Stop` is one of `StopDone`, `StopMaxSteps`, `StopInterrupt`,
+`StopStopped`, `StopHook` and `StopGuardrail`. Breaking out early cancels the
+run.
 
 ## Sessions
 
 ```go
 a, _ := kritrim.New(kritrim.Config{
-    Model:   "…",
+    Model:   model,
     Session: kritrim.FileSessions(".agent/sessions"), // or MemorySessions / SQLSessions
 })
 a.Run(ctx, "My name is Ada.", kritrim.Thread("user-42"))
@@ -235,7 +255,7 @@ Synchronous approvals use `Config.Approve`. To pause and resume later:
 
 ```go
 a, _ := kritrim.New(kritrim.Config{
-    Model:   "…",
+    Model:   model,
     Tools:   []kritrim.Tool{kritrim.Risky(refund)},
     Session: kritrim.FileSessions(".agent"),
     Approve: func(ctx context.Context, req kritrim.Approval) (kritrim.Decision, error) {
@@ -275,7 +295,7 @@ Native JSON schema where supported, one repair call when parsing fails, then
 
 ```go
 a, _ := kritrim.New(kritrim.Config{
-    Model:   "…",
+    Model:   model,
     Retry:   &kritrim.Retry{Max: 4}, // default: 3 attempts, jittered backoff
     Context: &kritrim.ContextConfig{MaxTokens: 60_000, KeepLast: 30},
     Hooks: kritrim.Hooks{
@@ -305,6 +325,25 @@ result.
 
 Hooks run after the built-in security checks; they can mutate requests,
 responses and tool results but cannot grant a capability policy denied.
+They can also steer the loop:
+
+```go
+Hooks: kritrim.Hooks{
+    AfterModel: func(ctx context.Context, e *kritrim.ModelEvent) {
+        if strings.Contains(e.Response.Text, "TODO") { e.Retry = true } // ask again
+    },
+    BeforeTool: func(ctx context.Context, e *kritrim.ToolEvent) error {
+        if e.Call.Name == "web_search" { e.Swap = "internal_search" } // reroute
+        return nil
+    },
+    AfterTool: func(ctx context.Context, e *kritrim.ToolEvent) {
+        if e.Result.IsError { e.End = "tool failed" } // Result.Stop == StopHook
+    },
+}
+```
+
+`Retry` is capped by `Retry.Max`; a swapped call goes through approval,
+argument validation and `BeforeTool` again, so a swap cannot skip a check.
 Combine hook sets with `kritrim.Chain`; they run in order, so list guards
 before observers:
 
@@ -402,7 +441,7 @@ waive an approval.
 
 ```go
 a, _ := kritrim.New(kritrim.Config{
-    Model:   "…",
+    Model:   model,
     Tools:   []kritrim.Tool{kritrim.Shell(kritrim.ShellConfig{Allow: []string{"go", "git"}})},
     Sandbox: kritrim.Docker(kritrim.DockerConfig{Image: "golang:1.27"}),
 })
@@ -431,7 +470,7 @@ host process                                 sandbox
 
 ```go
 cfg := kritrim.Config{
-    Model: "anthropic:claude-sonnet-5-5",
+    Model: kritrim.Anthropic("claude-sonnet-5-5"),
     Tools: []kritrim.Tool{kritrim.Shell(kritrim.ShellConfig{Allow: []string{"ls"}})},
     Sealed: &kritrim.Sealed{
         Sandbox:   kritrim.Docker(kritrim.DockerConfig{Image: "debian:bookworm-slim"}),
@@ -465,18 +504,36 @@ For containers, build the box with `go run ./cmd/kritrim box build -o box .`
 (default `linux/amd64`). `Local` needs no binary and requires
 `AllowUnsafeLocal: true`.
 
-### Third-party providers
+### Cloud and microVM sandboxes
 
-The contract is `Sandbox` + `Machine` + `Process`; see
-[`sandbox/README.md`](sandbox/README.md). E2B, microsandbox, Firecracker,
-Tensorlake and Daytona plug in without core changes and must pass the
-conformance suite.
+```go
+box, _ := e2b.New(e2b.Config{})                   // E2B_API_KEY
+box, _ := tensorlake.New(tensorlake.Config{})     // TENSORLAKE_API_KEY
+box, _ := daytona.New(daytona.Config{})           // DAYTONA_API_KEY
+box, _ := microsandbox.New(microsandbox.Config{}) // the msb CLI
+box, _ := firecracker.New(firecracker.Config{Kernel: "vmlinux", RootFS: "rootfs.ext4"})
+```
+
+| Adapter | Tools in a sandbox | Sealed agent | Network off by default |
+|---|:---:|:---:|:---:|
+| `sandbox/e2b` | yes | yes | yes |
+| `sandbox/tensorlake` | yes | yes | yes |
+| `sandbox/microsandbox` | yes | yes | yes (`--no-net`) |
+| `sandbox/firecracker` | yes | yes | yes (no NIC) |
+| `sandbox/daytona` | yes | no (no process stdio) | yes |
+
+API keys stay on the host. Firecracker needs Linux with KVM and a root
+filesystem containing the guest agent: `go run ./cmd/kritrim vmagent build`.
+Daytona merges stderr into stdout. Each adapter passes
+`sandbox/sandboxtest` against a protocol-level fake and has a live test that
+runs when its credentials are set. The contract for your own adapter is
+`Sandbox` + `Machine` + `Process`; see [`sandbox/README.md`](sandbox/README.md).
 
 ## MCP
 
 ```go
 a, _ := kritrim.New(kritrim.Config{
-    Model: "…",
+    Model: model,
     MCP: []kritrim.MCPConfig{
         {Name: "github", Command: "npx", Args: []string{"-y", "@modelcontextprotocol/server-github"}},
         {Name: "docs", URL: "https://mcp.example.com/mcp",
@@ -512,6 +569,19 @@ s, _ := multiagent.NewSwarm(
 res, _ = s.Run(ctx, "draft the launch post")
 ```
 
+Presets build an ordinary graph:
+
+```go
+pipeline, _ := multiagent.Sequence(
+    multiagent.Step{Name: "draft", Node: multiagent.AgentNode(writer)},
+    multiagent.Step{Name: "review", Node: multiagent.AgentNode(reviewer)},
+)
+router, _ := multiagent.Router(classify, map[string]multiagent.Node{
+    "billing": multiagent.AgentNode(billing),
+    "tech":    remote.Node(), // an A2A agent
+})
+```
+
 Swarm members get `handoff_to_<name>` tools. `Graph.AsTool` and
 `Swarm.AsTool` hand a whole composition to another agent as one tool, the
 way `Agent.AsTool` hands over one agent; the caller's model sees a sentence
@@ -535,8 +605,13 @@ res, _ := c.Run(ctx, "ticket 42")
 tool := c.AsTool("triage", "Routes a ticket")
 ```
 
-Agent card, `message/send`, `message/stream`, `tasks/get`, `tasks/cancel`, text
-and data parts, per-context isolation, and interrupt/resume are implemented.
+Agent card, `message/send`, `message/stream`, `tasks/get`, `tasks/cancel`, text,
+data and file parts, per-context isolation, and interrupt/resume are
+implemented. `c.Run(ctx, "summarize", a2a.Files(file))` sends files; the
+server gives images to the model, inlines text files, refuses other types,
+and fetches a file URI only from `ServerConfig.FileHosts` (checked at dial
+time, no redirects, capped by `MaxFileBytes`). `c.Node()` makes a remote
+agent a graph node.
 Tasks live in memory or SQL (`a2a.SQLTasks`). Auth is required; contexts are not an auth boundary. The client supports the
 OAuth client-credentials grant (`TokenURL`, `ClientID`, `ClientSecret`).
 Push notifications: set `ClientConfig.PushURL` (or `Client.SetPush`) and the
@@ -588,20 +663,30 @@ despite a failure — and `Judge(Recovered, model)` asks whether what it did
 instead made sense. `evals.RunRedTeam`
 runs prompt-injection, exfiltration and destructive-tool probes;
 `evals.GenerateCases` proposes cases from an agent description and
-`evals.Simulate` runs a model-played multi-turn user. The CLI renders and
-diagnoses reports:
+`evals.Simulate` runs a model-played multi-turn user.
+
+`Experiment.Score` scores results recorded elsewhere, and `evals.FromTrace`
+rebuilds them from `trace.JSON(w, trace.Content())` output, so production
+traffic can be graded with the same evaluators. The CLI needs no Go code:
 
 ```bash
-go run ./cmd/kritrim-evals report report.json
-go run ./cmd/kritrim-evals diagnose report.json
+kritrim-evals generate -model anthropic:claude-sonnet-5-5 -context agent.md -n 10 > cases.jsonl
+kritrim-evals run -cases cases.jsonl -contains -detect -o report.json -- go run ./myagent
+kritrim-evals traces -judge faithful,achieved -judge-model openai:gpt-4.1 trace.jsonl
+kritrim-evals report report.json
+kritrim-evals diagnose report.json
 ```
+
+`run` starts the agent program once per case with the input on stdin; it
+prints the answer, or a `kritrim.Result` as JSON to keep tool calls for
+trajectory checks. Every command exits 1 when a case fails.
 
 ## Skills and plugins
 
 ```go
 sk, _ := skills.Load("./skills")
 a, _ := kritrim.New(kritrim.Config{
-    Model: "…",
+    Model: model,
     Tools: append(skills.Tools(sk), kritrim.Time()),
     // skills.Prompt(sk) goes into Instructions
     Hooks: plugin.Inject(func(ctx context.Context) string { return "time: " + time.Now().Format(time.RFC3339) }),
@@ -638,7 +723,9 @@ anything else can happen.
 
 ```go
 sched, _ := trigger.NewScheduler(agent,
-    trigger.Schedule{Every: time.Hour, Thread: "daily", Prompt: "summarize"})
+    trigger.Schedule{Name: "digest", Cron: "0 9 * * mon-fri", Location: berlin, Thread: "daily", Prompt: "summarize"},
+    trigger.Schedule{Name: "poll", Every: 10 * time.Minute, Thread: "poll", Prompt: "check the queue"})
+sched.SetStore(store) // optional: several instances, each tick runs once
 sched.Start(ctx)
 defer sched.Close()
 
@@ -652,17 +739,31 @@ Webhooks require `X-Kritrim-Timestamp` and an HMAC-SHA256
 each delivery runs once even when duplicates arrive concurrently, a key reused
 for a different body gets 409, a full dedupe memory answers 503 instead of
 forgetting deliveries, and run errors are logged rather than returned.
+Deliveries are remembered in a `DedupeStore`: `MemoryDedupe` for one process,
+`SQLDedupe(db, ...)` (Postgres, SQLite, MySQL) when several instances serve
+the webhook, so a retry that lands on another instance still runs once.
 
 ## Memory
 
 ```go
 store, _ := memory.NewFile(".agent/memory")
-a, _ := kritrim.New(kritrim.Config{Model: "…", Tools: memory.Tools(store)})
+a, _ := kritrim.New(kritrim.Config{Model: model, Tools: memory.Tools(store)})
 ```
 
 `remember` and `recall` tools backed by a lexical memory store (memory or
 file). `memory.Inject(store, n)` recalls relevant facts into the system prompt
-before each model call. No vector database.
+before each model call.
+
+```go
+store, _ := memory.NewSemantic(base, memory.OpenAIEmbedder("text-embedding-3-small"),
+    memory.SemanticConfig{Dir: ".agent/memory"})
+```
+
+`NewSemantic` adds embedding search to any store: recall ranks by meaning,
+blended with the keyword score, and vectors are kept next to the store so a
+restart does not re-embed. Embedders: `OpenAIEmbedder` (and any compatible
+API), `OllamaEmbedder`, `GeminiEmbedder`, `BedrockEmbedder`. No vector
+database; what you remember is sent to the embedding provider.
 
 ## Examples
 
@@ -676,6 +777,9 @@ go run ./examples/sealed
 go run ./examples/a2a
 go run ./examples/evals
 go run ./examples/multiagent
+go run ./examples/semantic-memory
+go run ./examples/cron
+go run ./examples/a2a-files
 ```
 
 ## Test
@@ -685,23 +789,25 @@ go test ./...
 go test -race ./...
 go vet ./...
 go test -run='^$' -fuzz=FuzzPaths -fuzztime=30s .
+go test -run='^$' -bench=. -benchmem .
 ```
 
-CI also runs `govulncheck`, `staticcheck` and short fuzzing of the path,
-schema and network-guard code.
+CI also runs `govulncheck`, `staticcheck`, short fuzzing of the path, schema,
+network-guard and cron code, a benchmark smoke run, and an API-compatibility
+check against the latest v1 release. Numbers are in
+[`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
 
 ## Status
 
-Released: core loop, providers (OpenAI-compatible, Anthropic, Gemini,
-Bedrock) with reasoning and routing, tools (parallel and direct), sessions
-(memory/file/SQL/signed), durable approvals, hooks, retry, context
-strategies, state, fork/cancel/idempotency, audit, authorization, PII,
-tracing (JSON + OTLP), Docker/SSH/Local sandboxes (attach + streamed exec),
-sealed mode (host-enforced approvals, identity and budget), MCP, A2A, evals
-(criteria, chaos), graph/swarm, triggers, memory, skills, plugins, notebook,
-todos, python.
-
-Not shipped yet: E2B/microsandbox/Firecracker/Tensorlake sandbox adapters (the
-conformance kit and interface are ready), A2A file parts, provider
-guardrails, embedding-backed memory search. See
+v1.0 is stable: core loop, providers (OpenAI-compatible, Anthropic, Gemini,
+Bedrock) with reasoning, routing and guardrails, tools, sessions, durable
+approvals, hooks, context strategies, audit, authorization, PII, tracing,
+Docker/Local/SSH/E2B/Tensorlake/Daytona/microsandbox/Firecracker sandboxes,
+sealed mode, MCP, A2A with file parts, evals and its CLI, graphs, swarms and
+presets, cron triggers with shared dedupe, lexical and embedding memory,
+skills and plugins. See [`CHANGELOG.md`](CHANGELOG.md) and
 [`docs/ROADMAP.md`](docs/ROADMAP.md).
+
+## License
+
+MIT; see [`LICENSE`](LICENSE).

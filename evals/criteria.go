@@ -110,6 +110,18 @@ func Judge(c Criterion, model kritrim.Model) Evaluator {
 	return LLMJudge(JudgeConfig{Model: model, Rubric: string(c), Name: criterionName(c)})
 }
 
+// CriterionByName returns the built-in criterion with this report label,
+// such as "faithful" or "recovered".
+func CriterionByName(name string) (Criterion, bool) {
+	for _, c := range []Criterion{Faithful, Correct, Relevant, Coherent, Concise, Helpful,
+		Harmless, Unbiased, Answered, Obedient, Achieved, Recovered} {
+		if criterionName(c) == name {
+			return c, true
+		}
+	}
+	return "", false
+}
+
 // criterionName is the short label a built-in criterion carries into a
 // report.
 func criterionName(c Criterion) string {
@@ -161,7 +173,7 @@ func trajectory(r Result) string {
 			fmt.Fprintf(&b, "step %d: %s %s: %s\n", i+1, res.Name, status, truncate(res.Content, 1500))
 		}
 	}
-	if r.Run.Stop != "" && r.Run.Stop != "stop" {
+	if r.Run.Stop != "" && r.Run.Stop != kritrim.StopDone {
 		fmt.Fprintf(&b, "run ended early: %s\n", r.Run.Stop)
 	}
 	return b.String()

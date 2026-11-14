@@ -47,7 +47,7 @@ func (a *Agent) Stream(ctx context.Context, prompt string, opts ...Option) iter.
 			}
 		}
 		if err := <-done; err != nil {
-			yield(Event{Type: "error", Err: err}, err)
+			yield(Event{Type: EventError, Err: err}, err)
 		}
 	}
 }
@@ -95,6 +95,7 @@ func (a *Agent) run(ctx context.Context, prompt string, emit func(Event), opts .
 	a.registerRun(runID, cancel)
 	defer a.unregisterRun(runID)
 	o.runID = runID
+	o.end = &hookEnd{}
 	ctx = a.runContext(ctx, o, runID, nil)
 
 	var sess *Session
@@ -174,7 +175,7 @@ func (a *Agent) interruptResult(sess *Session, o runOptions) *Result {
 			break
 		}
 	}
-	return &Result{Text: text, Stop: "interrupt", Interrupts: append([]Interrupt(nil), sess.Pending...),
+	return &Result{Text: text, Stop: StopInterrupt, Interrupts: append([]Interrupt(nil), sess.Pending...),
 		Messages: append([]Message(nil), sess.Messages...), Thread: o.thread, RunID: o.runID}
 }
 
@@ -190,7 +191,7 @@ func (a *Agent) loop(ctx context.Context, sess *Session, msgs []Message, ps *Pau
 	var usage Usage
 	var steps []Step
 	var text string
-	stop := "stop"
+	stop := StopDone
 
 	if ps != nil {
 		for i := ps.Index; i < len(ps.Calls); i++ {
@@ -202,7 +203,7 @@ func (a *Agent) loop(ctx context.Context, sess *Session, msgs []Message, ps *Pau
 			ps.Results = append(ps.Results, res)
 			msgs = append(msgs, toolMessage(call, res))
 			r := res
-			emit(Event{Type: "tool_result", ToolResult: &r, Step: 0})
+			emit(Event{Type: EventToolResult, ToolResult: &r, Step: 0})
 		}
 		steps = append(steps, Step{Text: ps.Assistant.Content, ToolCalls: ps.Calls, ToolResults: ps.Results})
 		sess.Pending, sess.Paused = nil, nil
@@ -210,11 +211,15 @@ func (a *Agent) loop(ctx context.Context, sess *Session, msgs []Message, ps *Pau
 
 	toolCalls := 0
 	for step := 0; ; step++ {
-		if step >= a.cfg.Limits.Steps {
-			stop = "max_steps"
+		if reason := o.end.get(); reason != "" {
+			stop = a.endByHook(ctx, o, reason)
 			break
 		}
-		emit(Event{Type: "step_start", Step: step})
+		if step >= a.cfg.Limits.Steps {
+			stop = StopMaxSteps
+			break
+		}
+		emit(Event{Type: EventStepStart, Step: step})
 		req := Request{
 			Model:       modelName(o.model),
 			System:      a.cfg.Instructions,
@@ -234,21 +239,34 @@ func (a *Agent) loop(ctx context.Context, sess *Session, msgs []Message, ps *Pau
 		if herr := a.cfg.Hooks.beforeModel(ctx, &req); herr != nil {
 			return nil, herr
 		}
-		if err := fitBudget(&req, usage.Total(), a.cfg.Limits.Tokens); err != nil {
-			return nil, err
+		var resp *Response
+		var me *ModelEvent
+		for retries := 0; ; retries++ {
+			if err := fitBudget(&req, usage.Total(), a.cfg.Limits.Tokens); err != nil {
+				return nil, err
+			}
+			resp, err = a.modelStream(ctx, o, &req, emit)
+			if err != nil {
+				a.audit(ctx, o, "model", modelName(o.model), "error: "+err.Error())
+				return nil, err
+			}
+			me = a.cfg.Hooks.afterModel(ctx, &req, resp)
+			resp = me.Response
+			usage = usage.Add(resp.Usage)
+			if limit := a.cfg.Limits.Tokens; limit > 0 && usage.Total() > limit {
+				return nil, fmt.Errorf("kritrim: token budget %d exceeded (%d used)", limit, usage.Total())
+			}
+			a.auditModel(ctx, o, usage, resp)
+			if !me.Retry || me.End != "" || retries >= a.cfg.Retry.max() {
+				break
+			}
+			a.audit(ctx, o, "hook", "retry", fmt.Sprintf("attempt=%d", retries+1))
 		}
-		resp, err := a.modelStream(ctx, o, &req, emit)
-		if err != nil {
-			a.audit(ctx, o, "model", modelName(o.model), "error: "+err.Error())
-			return nil, err
-		}
-		a.cfg.Hooks.afterModel(ctx, &req, resp)
-		usage = usage.Add(resp.Usage)
 		text = resp.Text
-		if limit := a.cfg.Limits.Tokens; limit > 0 && usage.Total() > limit {
-			return nil, fmt.Errorf("kritrim: token budget %d exceeded (%d used)", limit, usage.Total())
+		guarded := resp.Stop == StopGuardrail
+		if me.End != "" || guarded {
+			resp.ToolCalls = nil
 		}
-		a.auditModel(ctx, o, usage, resp)
 
 		for i := range resp.ToolCalls {
 			if resp.ToolCalls[i].ID == "" {
@@ -262,10 +280,15 @@ func (a *Agent) loop(ctx context.Context, sess *Session, msgs []Message, ps *Pau
 
 		if len(resp.ToolCalls) == 0 {
 			steps = append(steps, stepRec)
-			emit(Event{Type: "step_end", Step: step, Usage: &resp.Usage})
+			emit(Event{Type: EventStepEnd, Step: step, Usage: &resp.Usage})
+			if me.End != "" {
+				stop = a.endByHook(ctx, o, me.End)
+			} else if guarded {
+				stop = StopGuardrail
+			}
 			break
 		}
-		emit(Event{Type: "step_end", Step: step, Usage: &resp.Usage})
+		emit(Event{Type: EventStepEnd, Step: step, Usage: &resp.Usage})
 		if toolCalls+len(resp.ToolCalls) > a.cfg.Limits.ToolCalls {
 			return nil, fmt.Errorf("kritrim: tool call limit %d exceeded", a.cfg.Limits.ToolCalls)
 		}
@@ -273,7 +296,7 @@ func (a *Agent) loop(ctx context.Context, sess *Session, msgs []Message, ps *Pau
 		if a.cfg.ToolConcurrency > 1 && len(resp.ToolCalls) > 1 && !a.anyRisky(resp.ToolCalls) {
 			for _, call := range resp.ToolCalls {
 				c := call
-				emit(Event{Type: "tool_call", ToolCall: &c, Step: step})
+				emit(Event{Type: EventToolCall, ToolCall: &c, Step: step})
 			}
 			results := a.executeParallel(ctx, o, resp.ToolCalls)
 			for i, call := range resp.ToolCalls {
@@ -281,12 +304,12 @@ func (a *Agent) loop(ctx context.Context, sess *Session, msgs []Message, ps *Pau
 				stepRec.ToolResults = append(stepRec.ToolResults, res)
 				msgs = append(msgs, toolMessage(call, res))
 				r := res
-				emit(Event{Type: "tool_result", ToolResult: &r, Step: step})
+				emit(Event{Type: EventToolResult, ToolResult: &r, Step: step})
 			}
 		} else {
 			for i, call := range resp.ToolCalls {
 				c := call
-				emit(Event{Type: "tool_call", ToolCall: &c, Step: step})
+				emit(Event{Type: EventToolCall, ToolCall: &c, Step: step})
 				res, pause := a.executeCall(ctx, o, call, emit)
 				if pause != nil {
 					ps := &PausedStep{Assistant: assistant, Calls: resp.ToolCalls, Results: stepRec.ToolResults, Index: i}
@@ -295,12 +318,12 @@ func (a *Agent) loop(ctx context.Context, sess *Session, msgs []Message, ps *Pau
 				stepRec.ToolResults = append(stepRec.ToolResults, res)
 				msgs = append(msgs, toolMessage(call, res))
 				r := res
-				emit(Event{Type: "tool_result", ToolResult: &r, Step: step})
+				emit(Event{Type: EventToolResult, ToolResult: &r, Step: step})
 			}
 		}
 		steps = append(steps, stepRec)
 		if st := StateFrom(ctx); st != nil && st.Get("stop") != nil {
-			stop = "stopped"
+			stop = StopStopped
 			break
 		}
 	}
@@ -340,9 +363,14 @@ func (a *Agent) loop(ctx context.Context, sess *Session, msgs []Message, ps *Pau
 		return nil, err
 	}
 	res := &Result{Text: text, Steps: steps, Usage: usage, Stop: stop, Messages: msgs, Thread: o.thread, RunID: o.runID}
-	emit(Event{Type: "finish", Usage: &usage})
+	emit(Event{Type: EventFinish, Usage: &usage})
 	a.audit(ctx, o, "run", "", "stop="+stop)
 	return res, nil
+}
+
+func (a *Agent) endByHook(ctx context.Context, o runOptions, reason string) string {
+	a.audit(ctx, o, "hook", "end", reason)
+	return StopHook
 }
 
 func (a *Agent) pause(ctx context.Context, sess *Session, msgs []Message, ps *PausedStep, index int, o runOptions, emit func(Event), usage Usage, steps []Step, text string) (*Result, error) {
@@ -364,9 +392,10 @@ func (a *Agent) pause(ctx context.Context, sess *Session, msgs []Message, ps *Pa
 		return nil, err
 	}
 	a.audit(ctx, o, "interrupt", "", fmt.Sprintf("pending=%d", len(ps.Interrupts)))
-	res := &Result{Text: text, Steps: steps, Usage: usage, Stop: "interrupt",
+	res := &Result{Text: text, Steps: steps, Usage: usage, Stop: StopInterrupt,
 		Interrupts: append([]Interrupt(nil), ps.Interrupts...), Paused: ps, Messages: msgs, Thread: o.thread, RunID: o.runID}
-	emit(Event{Type: "finish", Usage: &usage})
+	emit(Event{Type: EventInterrupt, Interrupts: res.Interrupts})
+	emit(Event{Type: EventFinish, Usage: &usage})
 	return res, nil
 }
 
@@ -422,18 +451,24 @@ func (a *Agent) executeParallel(ctx context.Context, o runOptions, calls []ToolC
 }
 
 func (a *Agent) executeCall(ctx context.Context, o runOptions, call ToolCall, emit func(Event)) (ToolResult, *Decision) {
+	return a.execute(ctx, o, call, emit, false)
+}
+
+// execute runs one call. swapped is true for a call a BeforeTool hook
+// rerouted: decisions recorded for the original tool do not apply to it.
+func (a *Agent) execute(ctx context.Context, o runOptions, call ToolCall, emit func(Event), swapped bool) (ToolResult, *Decision) {
 	tool, ok := a.tool(call.Name)
 	if !ok {
 		return ToolResult{CallID: call.ID, Name: call.Name, Content: "unknown tool " + call.Name, IsError: true}, nil
 	}
 	var dec *Decision
-	if d, ok := o.decisions[call.ID]; ok {
+	if d, ok := o.decisions[call.ID]; ok && !swapped {
 		dec = &d
 	}
 	if dec == nil && tool.risky() {
 		ap := &Approval{Tool: tool.Name, CallID: call.ID, Args: call.Args,
 			Message: fmt.Sprintf("Approve %s with %s?", tool.Name, jsonString(call.Args))}
-		emit(Event{Type: "approval", Approval: ap})
+		emit(Event{Type: EventApproval, Approval: ap})
 		if a.cfg.Approve == nil {
 			return ToolResult{CallID: call.ID, Name: tool.Name, Content: "rejected: approval required and Config.Approve is nil", IsError: true}, nil
 		}
@@ -442,6 +477,9 @@ func (a *Agent) executeCall(ctx context.Context, o runOptions, call ToolCall, em
 			return ToolResult{CallID: call.ID, Name: tool.Name, Content: "approval error: " + err.Error(), IsError: true}, nil
 		}
 		if d.Pause {
+			if swapped {
+				return ToolResult{CallID: call.ID, Name: tool.Name, Content: "rejected: a swapped call to " + tool.Name + " cannot pause for approval", IsError: true}, nil
+			}
 			return ToolResult{}, &d
 		}
 		dec = &d
@@ -468,11 +506,19 @@ func (a *Agent) executeCall(ctx context.Context, o runOptions, call ToolCall, em
 		if err := a.cfg.Hooks.BeforeTool(ctx, te); err != nil {
 			return ToolResult{CallID: call.ID, Name: tool.Name, Content: "blocked: " + err.Error(), IsError: true}, nil
 		}
+		o.end.set(te.End)
 		if te.Deny != "" {
 			return ToolResult{CallID: call.ID, Name: tool.Name, Content: "blocked: " + te.Deny, IsError: true}, nil
 		}
 		if te.Args != nil {
 			call.Args = te.Args
+		}
+		if te.Swap != "" && te.Swap != call.Name {
+			if swapped {
+				return ToolResult{CallID: call.ID, Name: tool.Name, Content: "blocked: a swapped call cannot swap again", IsError: true}, nil
+			}
+			a.audit(ctx, o, "hook", call.Name, "swap to "+te.Swap)
+			return a.execute(ctx, o, ToolCall{ID: call.ID, Name: te.Swap, Args: call.Args}, emit, true)
 		}
 	}
 
@@ -490,7 +536,9 @@ func (a *Agent) executeCall(ctx context.Context, o runOptions, call ToolCall, em
 	res.Content = a.redactor.redact(res.Content)
 	a.audit(ctx, o, "tool", tool.Name, "args="+a.redactor.redact(jsonString(call.Args))+" result="+truncate(res.Content, 2000))
 	if a.cfg.Hooks.AfterTool != nil {
-		a.cfg.Hooks.AfterTool(ctx, &ToolEvent{Call: &call, Result: &res})
+		te := &ToolEvent{Call: &call, Result: &res}
+		a.cfg.Hooks.AfterTool(ctx, te)
+		o.end.set(te.End)
 	}
 	return res, nil
 }
@@ -504,10 +552,10 @@ func (a *Agent) modelStream(ctx context.Context, o runOptions, req *Request, emi
 			resp, err := m.Stream(ctx, *req, func(d Delta) {
 				emitted = true
 				if d.Text != "" {
-					emit(Event{Type: "text", Text: d.Text})
+					emit(Event{Type: EventText, Text: d.Text})
 				}
 				if d.Reasoning != "" {
-					emit(Event{Type: "reasoning", Text: d.Reasoning})
+					emit(Event{Type: EventReasoning, Text: d.Reasoning})
 				}
 			})
 			if err == nil {

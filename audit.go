@@ -292,4 +292,5 @@ func VerifyAudit(path string, opts ...AuditOption) error {
 // AuditFunc adapts a function to AuditSink.
 type AuditFunc func(ctx context.Context, e Entry) error
 
+// Write calls f.
 func (f AuditFunc) Write(ctx context.Context, e Entry) error { return f(ctx, e) }

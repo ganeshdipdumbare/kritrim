@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/ganeshdipdumbare/kritrim"
+	"github.com/ganeshdipdumbare/kritrim/multiagent"
 )
 
 // ClientConfig configures a remote A2A agent.
@@ -228,23 +229,23 @@ func (c *Client) Stream(ctx context.Context, prompt string, opts ...RunOption) i
 		u.Path = strings.TrimSuffix(u.Path, "/") + "/"
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, u.String(), bytes.NewReader(body))
 		if err != nil {
-			yield(kritrim.Event{Type: "error", Err: err}, err)
+			yield(kritrim.Event{Type: kritrim.EventError, Err: err}, err)
 			return
 		}
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Accept", "text/event-stream")
 		if err := c.headers(ctx, req); err != nil {
-			yield(kritrim.Event{Type: "error", Err: err}, err)
+			yield(kritrim.Event{Type: kritrim.EventError, Err: err}, err)
 			return
 		}
 		resp, err := c.http.Do(req)
 		if err != nil {
-			yield(kritrim.Event{Type: "error", Err: err}, err)
+			yield(kritrim.Event{Type: kritrim.EventError, Err: err}, err)
 			return
 		}
 		defer resp.Body.Close()
 		if resp.StatusCode/100 != 2 {
-			yield(kritrim.Event{Type: "error", Err: fmt.Errorf("a2a: stream: %s", resp.Status)}, fmt.Errorf("a2a: stream: %s", resp.Status))
+			yield(kritrim.Event{Type: kritrim.EventError, Err: fmt.Errorf("a2a: stream: %s", resp.Status)}, fmt.Errorf("a2a: stream: %s", resp.Status))
 			return
 		}
 		sc := bufio.NewScanner(resp.Body)
@@ -260,15 +261,15 @@ func (c *Client) Stream(ctx context.Context, prompt string, opts ...RunOption) i
 			}
 			if ev.Artifact != nil {
 				for _, p := range ev.Artifact.Parts {
-					if p.Kind == "text" && p.Text != "" && !yield(kritrim.Event{Type: "text", Text: p.Text}, nil) {
+					if p.Kind == KindText && p.Text != "" && !yield(kritrim.Event{Type: kritrim.EventText, Text: p.Text}, nil) {
 						return
 					}
 				}
 			}
 			if ev.Status != nil && ev.Final {
-				t := "finish"
+				t := kritrim.EventFinish
 				if ev.Status.State == StateInputRequired {
-					t = "interrupt"
+					t = kritrim.EventInterrupt
 				}
 				if !yield(kritrim.Event{Type: t, Text: ev.Status.State}, nil) {
 					return
@@ -276,7 +277,7 @@ func (c *Client) Stream(ctx context.Context, prompt string, opts ...RunOption) i
 			}
 		}
 		if err := sc.Err(); err != nil {
-			yield(kritrim.Event{Type: "error", Err: err}, err)
+			yield(kritrim.Event{Type: kritrim.EventError, Err: err}, err)
 		}
 	}
 }
@@ -290,11 +291,21 @@ func (c *Client) AsTool(name, description string) kritrim.Tool {
 		if err != nil {
 			return "", err
 		}
-		if res.Stop == "interrupt" {
+		if res.Stop == kritrim.StopInterrupt {
 			return "", errors.New("remote agent needs approval; ask the user")
 		}
 		return res.Text, nil
 	})
+}
+
+// Node runs the remote agent as a multiagent graph node. The node's prompt
+// is the message; a remote interrupt ends the graph with
+// Result.Stop == kritrim.StopInterrupt, and the caller resumes it with Run
+// and Decisions.
+func (c *Client) Node(opts ...RunOption) multiagent.Node {
+	return func(ctx context.Context, prompt string, _ *multiagent.State) (*kritrim.Result, error) {
+		return c.Run(ctx, prompt, opts...)
+	}
 }
 
 // RunOption configures one client run.
@@ -304,6 +315,12 @@ type runConfig struct {
 	contextID string
 	taskID    string
 	decisions map[string]kritrim.Decision
+	files     []File
+}
+
+// Files attaches files to the message, after the prompt text.
+func Files(files ...File) RunOption {
+	return func(o *runConfig) { o.files = append(o.files, files...) }
 }
 
 // ContextID pins the A2A context (conversation) id.
@@ -335,7 +352,13 @@ func (c *Client) message(prompt string, o runConfig) Message {
 		}
 		return msg
 	}
-	msg.Parts = []Part{TextPart(prompt)}
+	if prompt != "" {
+		msg.Parts = []Part{TextPart(prompt)}
+	}
+	for _, f := range o.files {
+		f := f
+		msg.Parts = append(msg.Parts, Part{Kind: KindFile, File: &f})
+	}
 	return msg
 }
 
@@ -410,7 +433,7 @@ func resultOf(t *Task) (*kritrim.Result, error) {
 	var text strings.Builder
 	for _, a := range t.Artifacts {
 		for _, p := range a.Parts {
-			if p.Kind == "text" {
+			if p.Kind == KindText {
 				text.WriteString(p.Text)
 			}
 		}
@@ -421,16 +444,16 @@ func resultOf(t *Task) (*kritrim.Result, error) {
 	res.Text = text.String()
 	switch t.Status.State {
 	case StateCompleted:
-		res.Stop = "stop"
+		res.Stop = kritrim.StopDone
 	case StateInputRequired:
-		res.Stop = "interrupt"
+		res.Stop = kritrim.StopInterrupt
 		res.Interrupts = interruptsOf(t)
 	case StateFailed:
 		return nil, fmt.Errorf("a2a: task failed: %s", res.Text)
 	case StateCanceled:
-		res.Stop = "stop"
+		res.Stop = kritrim.StopDone
 	default:
-		res.Stop = "stop"
+		res.Stop = kritrim.StopDone
 	}
 	return res, nil
 }
@@ -441,7 +464,7 @@ func interruptsOf(t *Task) []kritrim.Interrupt {
 	}
 	var out []kritrim.Interrupt
 	for _, p := range t.Status.Message.Parts {
-		if p.Kind != "data" {
+		if p.Kind != KindData {
 			continue
 		}
 		raw, ok := p.Data["interrupts"].([]any)

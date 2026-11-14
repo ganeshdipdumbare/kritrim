@@ -140,7 +140,7 @@ func (resilientEval) Evaluate(ctx context.Context, r Result) (Score, error) {
 	if failed == 0 {
 		return Score{Evaluator: "resilient", Value: 1, Pass: true, Reason: "no tool failed"}, nil
 	}
-	if r.Run != nil && r.Run.Stop != "stop" {
+	if r.Run != nil && r.Run.Stop != kritrim.StopDone {
 		return Score{Evaluator: "resilient",
 			Reason: fmt.Sprintf("%d tool failure(s) and the run ended as %q", failed, r.Run.Stop)}, nil
 	}
