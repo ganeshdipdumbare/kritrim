@@ -47,6 +47,7 @@
     <a class="mark" href="#introduction" aria-label="kritrim home"><span class="wordmark">KRITRIM</span></a>
     <nav class="toplinks" aria-label="Sections">
       <a href="#quickstart" data-top="docs">Docs</a>
+      <a href="#gbot" data-top="docs">Case study</a>
       <a href="https://github.com/ganeshdipdumbare/kritrim/tree/main/examples">Examples</a>
       <a href="#reference-api" data-top="api">API</a>
       <a href="https://github.com/ganeshdipdumbare/kritrim/blob/main/docs/ROADMAP.md">Roadmap</a>
@@ -1973,11 +1974,173 @@ if err := kritrim.VerifyAudit(".agent/audit.jsonl", kritrim.AuditKey(key)); err 
       <ul>
         <li><a href="#installation">Installation</a> — add v1.0.0 to a module.</li>
         <li><a href="#quickstart">Quickstart</a> — first running agent.</li>
+        <li><a href="#gbot">Case study: gbot</a> — how a real product wires these pieces.</li>
         <li><a href="#reference-api">API reference</a> — symbol map for the shipped surface.</li>
       </ul>
     </div>
   </section>
 
+  <section id="gbot" class="page" data-nav="Case study: gbot">
+    <h1>Case study: gbot</h1>
+    <p class="lede">This page is not a tutorial for kritrim APIs — it shows how a real product uses them. <a href="https://github.com/ganeshdipdumbare/gbot">gbot</a> is a local-first app of persistent AI teammates. Each bot has its own chat, memory, schedule and Linux computer. The agent loop is kritrim; the UI, queue, desktop and product policy are gbot’s.</p>
+
+    <div class="note"><b>Read this after the guides</b><div><p>If you are new to kritrim, start with <a href="#quickstart">Quickstart</a>. Come back here when you want to see how sessions, durable approvals, hooks, memory and cron look in production code.</p></div></div>
+
+    <h2>What kritrim owns vs what gbot owns</h2>
+    <p>Columns: concern and who implements it. The split matters — kritrim is the SDK; gbot is the product built on top.</p>
+    <div class="table"><table>
+      <thead><tr><th>Concern</th><th>Who</th></tr></thead>
+      <tbody>
+        <tr><td>Model call, tool loop, retries, limits, stop reasons</td><td>kritrim</td></tr>
+        <tr><td>Session store API, signed sessions, context compaction</td><td>kritrim (store backend is gbot’s SQLite)</td></tr>
+        <tr><td>Risky tools, <code>Approve</code> / <code>Pause</code> / <code>Decisions</code></td><td>kritrim protocol; gbot renders chat cards</td></tr>
+        <tr><td>Event stream for “thinking / working / needs you”</td><td>kritrim <code>OnEvent</code>; gbot maps events to presence</td></tr>
+        <tr><td>Typed tools and MCP as <code>NewRawTool</code></td><td>kritrim; gbot connects MCP servers itself</td></tr>
+        <tr><td>Cron expression parsing for routines</td><td>kritrim <code>trigger.ParseCron</code>; gbot owns presets and firing</td></tr>
+        <tr><td>Linux desktop (browser, shell, sleep/wake)</td><td>gbot (<code>microsandbox</code> / Docker) — not <code>kritrim.Sealed</code></td></tr>
+        <tr><td>Message queue, Slack, group chat, vault UI</td><td>gbot</td></tr>
+      </tbody>
+    </table></div>
+
+    <h2>1. One agent per model</h2>
+    <p>gbot caches a <code>*kritrim.Agent</code> per model id. Building it wires the live tool set, the shared session store, approvals, hooks, limits and a summarizer. Provider constructors are the usual ones — Ollama locally by default, plus Anthropic, OpenAI, Gemini and a mock for tests.</p>
+    <div class="code" data-title="gbot · runs/runtime.go (simplified)"><pre><code class="language-go">func (r *Runtime) build(model string) (*kritrim.Agent, error) {
+	m, err := r.modelFor(model)
+	if err != nil {
+		return nil, err
+	}
+	tools := append(memory.Tools(r.mem), kritrim.Time())
+	tools = append(tools, r.mcpTools()...)
+	return kritrim.New(kritrim.Config{
+		Model:   m,
+		Session: r.sessions, // often SignedSessions(...)
+		Tools:   tools,
+		Approve: r.approve,
+		Hooks: kritrim.Hooks{
+			BeforeModel: r.beforeModel,
+			BeforeTool:  r.beforeTool,
+			AfterTool:   r.afterTool,
+		},
+		Retry:  &amp;kritrim.Retry{Max: 3},
+		Limits: kritrim.Limits{Steps: r.cfg.MaxSteps, ToolCalls: r.cfg.MaxSteps * 4},
+		Context: &amp;kritrim.ContextConfig{
+			MaxTokens: r.contextTokens(),
+			KeepLast:  20,
+			Strategy:  kritrim.Summarize(r.summarizer(m)),
+		},
+		Reasoning: r.reasoningFor(model),
+	})
+}</code></pre></div>
+    <p>Related guides: <a href="#providers">Providers</a>, <a href="#sessions">Sessions</a>, <a href="#context">Context management</a>, <a href="#security">Security</a> (limits / retry).</p>
+
+    <h2>2. Signed sessions on a custom store</h2>
+    <p>Chat history lives in gbot’s SQLite-backed <code>SessionStore</code>. When a session HMAC key is configured, the store is wrapped so a tampered or unsigned thread is refused instead of replayed:</p>
+    <div class="code" data-title="go"><pre><code class="language-go">r.sessions = store.NewSessions(st)
+if len(cfg.SessionKey) &gt; 0 {
+	r.sessions = kritrim.SignedSessions(r.sessions, cfg.SessionKey)
+}</code></pre></div>
+    <p>Each bot/user conversation is a <code>kritrim.Thread(...)</code>. Group turns use a separate thread id so teammates do not overwrite each other’s history. Conflicts surface as <code>ErrSessionConflict</code>; tampering as <code>ErrSessionTampered</code>.</p>
+    <p>Related guide: <a href="#sessions">Sessions and state</a>.</p>
+
+    <h2>3. Durable approvals as chat cards</h2>
+    <p>Risky tools (<code>ask_user</code>, shell, browser clicks, vault typing, routines, MCP tools marked risky, …) go through <code>Config.Approve</code>. gbot’s modes are Ask / Auto / Never, plus allow and block lists. Questions and takeovers always pause; everything else follows the mode:</p>
+    <div class="code" data-title="gbot · runs/guard.go (simplified)"><pre><code class="language-go">func (r *Runtime) approve(ctx context.Context, a kritrim.Approval) (kritrim.Decision, error) {
+	rc := runFrom(ctx)
+	if rc.block[a.Tool] {
+		return kritrim.Reject("The person blocked this tool."), nil
+	}
+	if a.Tool == "ask_user" || a.Tool == "request_takeover" {
+		return kritrim.Pause(), nil
+	}
+	if !needsApproval(rc, a.Tool) {
+		return kritrim.Approve(), nil
+	}
+	return kritrim.Pause(), nil
+}</code></pre></div>
+    <p>When a run stops with <code>StopInterrupt</code>, gbot turns each interrupt into a card in the chat. The person’s answer becomes <code>kritrim.Decisions</code> on a later <code>Run</code> with an empty prompt — same durable-pause pattern as the <a href="#approvals">Approvals</a> guide. Auto mode can fill some decisions without showing a card.</p>
+
+    <h2>4. Streaming events drive presence</h2>
+    <p>The UI’s “thinking / working / needs you / done” states come from <code>OnEvent</code>, not from a separate websocket protocol inside kritrim. Text deltas, tool calls and tool results update the bot’s eyes and activity log while the queue item is still running:</p>
+    <div class="code" data-title="go"><pre><code class="language-go">onEvent := func(e kritrim.Event) {
+	switch e.Type {
+	case kritrim.EventStepStart, kritrim.EventReasoning:
+		r.setPresence(botID, PresenceThinking)
+	case kritrim.EventText:
+		hub.PublishText(botID, e.Text)
+	case kritrim.EventToolCall:
+		r.setPresence(botID, PresenceWorking)
+	case kritrim.EventToolResult:
+		hub.PublishToolResult(botID, e.ToolResult)
+	}
+}
+res, err := agent.Run(ctx, prompt,
+	kritrim.Thread(th), kritrim.User(userID), kritrim.OnEvent(onEvent))</code></pre></div>
+    <p>Related guide: <a href="#streaming">Streaming</a>.</p>
+
+    <h2>5. Typed tools for the “computer”</h2>
+    <p>The bot’s private desktop is gbot’s own layer (microsandbox or Docker). kritrim never sees the VM — it sees ordinary tools. Shell, file and browser actions are <code>NewTool</code> / <code>Risky(NewTool(...))</code> with struct tags for schemas. That is the same pattern as the <a href="#tools">Tools</a> guide; the sandbox boundary is product code, not <code>Config.Sandbox</code>.</p>
+    <div class="code" data-title="go"><pre><code class="language-go">kritrim.Risky(kritrim.NewTool("computer_shell",
+	"Run a bash command on your own Linux computer…",
+	func(ctx context.Context, in shellIn) (string, error) {
+		return computer.Shell(ctx, botID, in.Command)
+	}))</code></pre></div>
+    <p>Memory search, routines, skills and “message another bot” are more typed tools on the same agent.</p>
+
+    <h2>6. MCP as prefixed raw tools</h2>
+    <p>People add remote MCP servers in the UI. gbot connects, lists tools, and registers each as a namespaced <code>NewRawTool</code> (often wrapped in <code>Risky</code>). Prefixes keep accounts isolated; the approve hook rejects a prefix that does not belong to the current user. gbot keeps the HTTP/SSE session itself so large responses and OAuth stay in one place — then hands schemas to kritrim.</p>
+    <p>Related guide: <a href="#mcp">MCP</a>.</p>
+
+    <h2>7. Hooks for product policy</h2>
+    <p><code>BeforeModel</code> / <code>BeforeTool</code> / <code>AfterTool</code> enforce rules that are not generic enough for the SDK: tainting a run after outside content (web pages, webhooks, MCP results) enters, collecting Sources for citations, hiding another account’s MCP tools, and recording evidence for a task contract. That is the same hook surface as <a href="#security">Security</a>, used for product semantics.</p>
+
+    <h2>8. Routines and cron</h2>
+    <p>Scheduled prompts (“routines”) use <code>trigger.ParseCron</code> for five-field expressions. gbot adds its own named presets and owns webhook delivery; kritrim only parses and evaluates the schedule expression.</p>
+    <div class="code" data-title="go"><pre><code class="language-go">c, err := trigger.ParseCron(expr)
+// next fire time from c.Next(now)</code></pre></div>
+    <p>Related guide: <a href="#triggers">Triggers</a>.</p>
+
+    <h2>9. Stop reasons the UI cares about</h2>
+    <p>After <code>Run</code>, gbot branches on the result — not only on <code>err</code>:</p>
+    <ul>
+      <li><code>StopInterrupt</code> → show approval / question / takeover cards and keep the queue item paused.</li>
+      <li><code>StopGuardrail</code> → tell the person the provider blocked the reply; do not run that turn’s tool calls.</li>
+      <li>Success with text → append the assistant message and mark the queue item done.</li>
+    </ul>
+    <p>Related guides: <a href="#approvals">Approvals</a>, <a href="#providers">Providers</a> (guardrails).</p>
+
+    <h2>Feature map</h2>
+    <p>Columns: gbot product feature and the kritrim piece behind it.</p>
+    <div class="table"><table>
+      <thead><tr><th>In gbot</th><th>In kritrim</th></tr></thead>
+      <tbody>
+        <tr><td>Local Ollama + optional cloud models</td><td><code>Ollama</code>, <code>Anthropic</code>, <code>OpenAI</code>, <code>Gemini</code>, <code>Mock</code></td></tr>
+        <tr><td>One continuous chat per bot</td><td><code>Session</code> + <code>Thread</code></td></tr>
+        <tr><td>Rolling summary when context grows</td><td><code>ContextConfig</code> + <code>Summarize</code></td></tr>
+        <tr><td>History search tool</td><td><code>memory.Tools</code> / typed <code>NewTool</code></td></tr>
+        <tr><td>Ask / Auto / Never approvals</td><td><code>Risky</code>, <code>Approve</code>, <code>Pause</code>, <code>Decisions</code></td></tr>
+        <tr><td>Eyes and activity while working</td><td><code>OnEvent</code> / <code>Stream</code> event types</td></tr>
+        <tr><td>Browser, shell, vault, routines</td><td><code>NewTool</code> + <code>Risky</code></td></tr>
+        <tr><td>Integrations panel (MCP)</td><td><code>NewRawTool</code> (+ product-owned transport)</td></tr>
+        <tr><td>Scheduled routines</td><td><code>trigger.ParseCron</code></td></tr>
+        <tr><td>Tamper-resistant chat history</td><td><code>SignedSessions</code></td></tr>
+        <tr><td>Step and tool-call ceilings</td><td><code>Limits</code>, <code>Retry</code></td></tr>
+        <tr><td>Reasoning-capable models</td><td><code>Config.Reasoning</code></td></tr>
+      </tbody>
+    </table></div>
+
+    <div class="what-happened"><b>Takeaway</b>
+      <p>gbot did not fork the agent loop. It implemented a <code>SessionStore</code>, an <code>Approve</code> callback that pauses into chat cards, a set of typed tools around its own computer, and hooks for product policy — then let kritrim run the model. The desktop sandbox and the message queue stay outside the SDK on purpose.</p>
+    </div>
+
+    <div class="next-steps"><b>Next steps</b>
+      <ul>
+        <li><a href="https://github.com/ganeshdipdumbare/gbot">gbot on GitHub</a> — full source under <code>server/internal/runs</code>.</li>
+        <li><a href="#approvals">Approvals</a> — the pause/resume pattern gbot’s cards use.</li>
+        <li><a href="#tools">Tools</a> — typed tools and <code>Risky</code>.</li>
+        <li><a href="#sessions">Sessions and state</a> — signed stores and threads.</li>
+      </ul>
+    </div>
+  </section>
 
   <nav class="pager" id="pager" aria-label="Previous and next page"></nav>
 
@@ -1987,7 +2150,7 @@ if err := kritrim.VerifyAudit(".agent/audit.jsonl", kritrim.AuditKey(key)); err 
         <div class="brandline"><span class="wordmark">KRITRIM</span></div>
         <p>The Go agent SDK that is simple to write and secure by default. One run call, every capability brokered.</p>
       </div>
-      <div><h6>Docs</h6><a href="#quickstart">Quickstart</a><a href="#concepts">Concepts</a><a href="#security">Security</a><a href="#reference-api">Reference</a></div>
+      <div><h6>Docs</h6><a href="#quickstart">Quickstart</a><a href="#concepts">Concepts</a><a href="#security">Security</a><a href="#gbot">Case study</a><a href="#reference-api">Reference</a></div>
       <div><h6>Project</h6><a href="https://github.com/ganeshdipdumbare/kritrim">GitHub</a><a href="https://github.com/ganeshdipdumbare/kritrim/releases">Releases</a><a href="https://github.com/ganeshdipdumbare/kritrim/blob/main/docs/ROADMAP.md">Roadmap</a><a href="https://github.com/ganeshdipdumbare/kritrim/blob/main/SECURITY.md">Security</a></div>
       <div><h6>Help</h6><a href="https://github.com/ganeshdipdumbare/kritrim/issues">Report an issue</a><a href="https://github.com/ganeshdipdumbare/kritrim/blob/main/README.md">README</a><a href="https://github.com/ganeshdipdumbare/kritrim/tree/main/examples">Examples</a><a href="https://github.com/ganeshdipdumbare/kritrim/edit/main/docs/site.html">Edit this page</a></div>
     </div>

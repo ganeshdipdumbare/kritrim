@@ -4,6 +4,7 @@
     { title: "Build guides", pages: ["tools", "sessions", "context", "approvals", "structured-output", "streaming"] },
     { title: "Run guides", pages: ["security", "authorization", "sandboxes", "sealed", "observability"] },
     { title: "Components", pages: ["providers", "mcp", "a2a", "multiagent", "evals", "triggers", "memory-skills"] },
+    { title: "Examples", pages: ["gbot"] },
     { title: "Reference", pages: ["reference-api", "status"] }
   ];
   var ICON = {
