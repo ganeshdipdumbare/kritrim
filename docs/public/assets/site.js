@@ -1,8 +1,8 @@
 (function () {
   var NAV = [
     { title: "Get started", pages: ["introduction", "installation", "quickstart", "concepts"] },
-    { title: "Build guides", pages: ["tools", "sessions", "approvals", "structured-output", "streaming"] },
-    { title: "Run guides", pages: ["security", "sandboxes", "sealed", "observability"] },
+    { title: "Build guides", pages: ["tools", "sessions", "context", "approvals", "structured-output", "streaming"] },
+    { title: "Run guides", pages: ["security", "authorization", "sandboxes", "sealed", "observability"] },
     { title: "Components", pages: ["providers", "mcp", "a2a", "multiagent", "evals", "triggers", "memory-skills"] },
     { title: "Reference", pages: ["reference-api", "status"] }
   ];
@@ -42,7 +42,7 @@
         });
         return;
       }
-      var open = openGroups[g.title] !== undefined ? !!openGroups[g.title] : (g.title === "Get started" || g.title === "Build guides");
+      var open = openGroups[g.title] !== undefined ? !!openGroups[g.title] : true;
       var html = '<div class="group" data-open="' + open + '"><button type="button" aria-expanded="' + open + '">' + g.title + ICON.chev + '</button><div class="items">';
       g.pages.forEach(function (id) {
         if (pages[id]) html += '<a class="item" href="#' + id + '">' + title(id) + "</a>";
@@ -63,7 +63,7 @@
   // ---- page chrome ----
   order.forEach(function (id) {
     var h1 = pages[id].querySelector("h1");
-    if (!h1) return;
+    if (!h1 || id === "introduction") return;
     var row = document.createElement("div");
     row.className = "titlerow";
     h1.parentNode.insertBefore(row, h1);
@@ -186,7 +186,7 @@
         });
         if (!hs.length) toc.innerHTML = '<a href="#' + id + '" class="on">' + title(id) + "</a>";
       }
-      var top = id === "reference-api" || id === "status" ? "api" : "docs";
+      var top = id === "introduction" ? "" : id === "reference-api" || id === "status" ? "api" : "docs";
       document.querySelectorAll(".toplinks a").forEach(function (a) {
         if (a.dataset.top === top) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current");
       });
@@ -219,14 +219,14 @@
   var themeBtn = document.getElementById("themebtn");
   var sunIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>';
   var moonIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>';
-  function themeIsDark() { return root.dataset.theme ? root.dataset.theme === "dark" : matchMedia("(prefers-color-scheme: dark)").matches; }
+  function themeIsDark() { return root.dataset.theme !== "light"; }
   function syncTheme() {
     if (!themeBtn) return;
     var dark = themeIsDark();
     themeBtn.innerHTML = dark ? sunIcon : moonIcon;
     themeBtn.setAttribute("aria-pressed", String(dark));
     themeBtn.setAttribute("aria-label", dark ? "Switch to light mode" : "Switch to dark mode");
-    document.querySelectorAll('meta[name="theme-color"]').forEach(function (m) { m.setAttribute("content", dark ? "#0e0e0d" : "#f6f4ee"); });
+    document.querySelectorAll('meta[name="theme-color"]').forEach(function (m) { m.setAttribute("content", dark ? "#000000" : "#ffffff"); });
   }
   syncTheme();
   if (themeBtn) themeBtn.addEventListener("click", function () {
@@ -264,8 +264,7 @@
   }
   function openPalette() { if (!pal) return; lastFocus = document.activeElement; pal.hidden = false; document.body.style.overflow = "hidden"; pq.value = ""; sel = 0; render(); setTimeout(function () { pq.focus(); }, 0); }
   function closePalette() { if (!pal || pal.hidden) return; pal.hidden = true; document.body.style.overflow = ""; if (lastFocus && lastFocus.focus) { try { lastFocus.focus(); } catch (e) {} } }
-  var sb = document.getElementById("searchbtn");
-  if (sb) sb.addEventListener("click", openPalette);
+  document.querySelectorAll("[data-search]").forEach(function (b) { b.addEventListener("click", openPalette); });
   if (pq) pq.addEventListener("input", function () { sel = 0; render(); });
   if (pal) pal.addEventListener("click", function (e) { if (e.target === pal) closePalette(); });
   document.addEventListener("keydown", function (e) {
@@ -328,7 +327,26 @@
     var b = e.target.closest && e.target.closest("[data-copy]");
     if (!b) return;
     e.preventDefault();
-    copyText(b.getAttribute("data-copy"), b, ICON.check, ICON.copy);
+    if (b.hasAttribute("data-label")) copyText(b.getAttribute("data-copy"), b, "copied", "copy");
+    else copyText(b.getAttribute("data-copy"), b, ICON.check, ICON.copy);
+  });
+
+  // ---- use cases ----
+  var ucTabs = Array.prototype.slice.call(document.querySelectorAll(".uc-list [data-uc]"));
+  function selectUseCase(tab) {
+    ucTabs.forEach(function (t) { t.setAttribute("aria-selected", String(t === tab)); });
+    document.querySelectorAll("[data-uc-pane]").forEach(function (p) { p.hidden = p.getAttribute("data-uc-pane") !== tab.getAttribute("data-uc"); });
+  }
+  ucTabs.forEach(function (t, i) {
+    t.addEventListener("click", function () { selectUseCase(t); });
+    t.addEventListener("keydown", function (e) {
+      var d = e.key === "ArrowDown" || e.key === "ArrowRight" ? 1 : e.key === "ArrowUp" || e.key === "ArrowLeft" ? -1 : 0;
+      if (!d) return;
+      e.preventDefault();
+      var next = ucTabs[(i + d + ucTabs.length) % ucTabs.length];
+      selectUseCase(next);
+      next.focus();
+    });
   });
 
   // ---- mobile nav ----
@@ -339,6 +357,8 @@
   }
   if (menubtn) menubtn.addEventListener("click", function () {
     var open = !document.body.classList.contains("nav-open");
+    var bar = document.querySelector(".topbar");
+    if (bar) document.documentElement.style.setProperty("--drawer-top", Math.max(0, bar.getBoundingClientRect().bottom) + "px");
     document.body.classList.toggle("nav-open", open);
     menubtn.setAttribute("aria-expanded", String(open));
   });
