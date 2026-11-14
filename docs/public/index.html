@@ -26,12 +26,12 @@
 <link rel="icon" href="assets/img/icon-512.png" sizes="512x512" type="image/png">
 <link rel="apple-touch-icon" href="assets/img/icon-180.png">
 <link rel="manifest" href="site.webmanifest">
-<link rel="stylesheet" href="assets/fonts/fonts.css?v=2387652655">
+<link rel="stylesheet" href="assets/fonts/fonts.css?v=3125181418">
 <link rel="preload" href="assets/fonts/jetbrains-mono-600-normal-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="assets/fonts/space-grotesk-400-normal-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="assets/fonts/pixelify-sans-600-normal-latin.woff2" as="font" type="font/woff2" crossorigin>
-<link rel="stylesheet" href="assets/site.css?v=2387652655">
-<link rel="stylesheet" href="assets/brand.css?v=2387652655">
+<link rel="stylesheet" href="assets/site.css?v=3125181418">
+<link rel="stylesheet" href="assets/brand.css?v=3125181418">
 <script>(function(){try{var q=new URLSearchParams(location.search).get("theme");if(q==="light"||q==="dark")document.documentElement.dataset.theme=q;var t=localStorage.getItem("kritrim-theme");if(!q&&t)document.documentElement.dataset.theme=t;}catch(e){}})();</script>
 </head>
 <body data-page="introduction">
@@ -298,7 +298,7 @@ res, _ := front.Run(ctx, "My invoice shows the wrong VAT number")</code></pre></
     <div class="cta-band reveal">
       <div>
         <h2>Start with one file.</h2>
-        <p>The quickstart runs offline with a mock model. Add a real provider when you are ready; the rest of the code does not change.</p>
+        <p>Install the module, then follow the quickstart — it runs offline with a mock model. Add a real provider when you are ready; the rest of the code does not change. Begin at <a href="#installation">Installation</a>, then <a href="#quickstart">Quickstart</a>.</p>
       </div>
       <div class="hero-actions"><a class="btn primary" href="#quickstart">Quickstart →</a><a class="btn" href="#reference-api">API reference</a></div>
     </div>
@@ -306,27 +306,64 @@ res, _ := front.Run(ctx, "My invoice shows the wrong VAT number")</code></pre></
 
   <section id="installation" class="page">
     <h1>Installation</h1>
-    <p class="lede">kritrim needs Go 1.27 or newer and has no third-party dependencies.</p>
+    <p class="lede">Add kritrim to a Go module, confirm the toolchain, then move on to the quickstart. There are no third-party dependencies to vendor.</p>
+
+    <h2>1. Check Go</h2>
+    <p>kritrim needs <b>Go 1.27 or newer</b>. On build servers, prefer 1.27.4 or later for the <code>net/http</code> fix GO-2026-6859.</p>
+    <div class="code" data-title="terminal"><pre><code class="language-bash">go version</code></pre></div>
+
+    <h2>2. Add the module</h2>
+    <p>From any module that will import kritrim:</p>
     <div class="code" data-title="terminal"><pre><code class="language-bash">go get github.com/ganeshdipdumbare/kritrim@v1.0.0</code></pre></div>
-    <p>MIT licensed. Release binaries for <code>kritrim</code>, <code>kritrim-evals</code> and <code>kritrim-vmagent</code> are on the <a href="https://github.com/ganeshdipdumbare/kritrim/releases">releases page</a>, with a Sigstore-signed checksum file and build provenance; <a href="https://github.com/ganeshdipdumbare/kritrim/blob/main/SECURITY.md">SECURITY.md</a> shows how to verify them.</p>
-    <h2>From a checkout</h2>
-    <p>The suite runs offline; the mock model needs no key.</p>
+    <p>That pulls the stable v1 API. MIT licensed; see <a href="https://github.com/ganeshdipdumbare/kritrim/blob/main/LICENSE">LICENSE</a>.</p>
+
+    <h2>3. Optional CLI binaries</h2>
+    <p>Release builds of <code>kritrim</code>, <code>kritrim-evals</code> and <code>kritrim-vmagent</code> ship on the <a href="https://github.com/ganeshdipdumbare/kritrim/releases">releases page</a> with a Sigstore-signed <code>SHA256SUMS</code> and build provenance. <a href="https://github.com/ganeshdipdumbare/kritrim/blob/main/SECURITY.md">SECURITY.md</a> shows how to verify them. You only need these for evals CLI work or Firecracker guest images — not for importing the SDK.</p>
+
+    <h2>Try it offline from a checkout</h2>
+    <p>Every example in the repository compiles against the mock model, so you can clone and run without an API key:</p>
     <div class="code" data-title="terminal"><pre><code class="language-bash">git clone https://github.com/ganeshdipdumbare/kritrim
 cd kritrim
 go test ./...
 go run ./examples/quickstart</code></pre></div>
-    <h2>Docs</h2>
-    <p>This site is a static build. Regenerate <code>docs/public</code> with:</p>
-    <div class="code" data-title="terminal"><pre><code class="language-bash">docs/build.sh
-python3 -m http.server 8080 -d docs/public</code></pre></div>
-    <div class="note"><b>Versioning</b><div><p>kritrim follows semantic versioning. Within v1 nothing exported is removed or changed, interfaces you implement gain no methods, and stored sessions, audit logs and traces stay readable; <a href="https://github.com/ganeshdipdumbare/kritrim/blob/main/docs/API.md">docs/API.md</a> spells out the promise and CI checks it. Coming from v0.9? Read <a href="https://github.com/ganeshdipdumbare/kritrim/blob/main/docs/MIGRATING.md">docs/MIGRATING.md</a>. Every change is in the <a href="https://github.com/ganeshdipdumbare/kritrim/blob/main/CHANGELOG.md">changelog</a>.</p></div></div>
+    <p>You should see a short hello from the mock model printed to the terminal.</p>
+
+    <div class="note"><b>Versioning</b><div><p>Within v1 nothing exported is removed or changed, interfaces you implement gain no methods, and stored sessions, audit logs and traces stay readable. <a href="https://github.com/ganeshdipdumbare/kritrim/blob/main/docs/API.md">docs/API.md</a> spells out the promise; CI checks it. Coming from v0.9? Read <a href="https://github.com/ganeshdipdumbare/kritrim/blob/main/docs/MIGRATING.md">docs/MIGRATING.md</a>. Every change is in the <a href="https://github.com/ganeshdipdumbare/kritrim/blob/main/CHANGELOG.md">changelog</a>.</p></div></div>
+
+    <div class="next-steps"><b>Next steps</b>
+      <ul>
+        <li><a href="#quickstart">Quickstart</a> — install is done; build a first running agent.</li>
+        <li><a href="#concepts">Concepts</a> — the words these docs use (agent, run, tool, sealed…).</li>
+      </ul>
+    </div>
   </section>
 
   <section id="quickstart" class="page">
     <h1>Quickstart</h1>
-    <p class="lede">From an empty folder to an agent with a typed tool, a stream and a saved conversation.</p>
-    <h2>Hello</h2>
-    <div class="code" data-title="go"><pre><code class="language-go">package main
+    <p class="lede">This guide takes you to a first running agent: create a module, pick a model provider, run a prompt, then give the agent a typed tool. Streaming and saved conversations come after. Everything beyond that has its own guide, linked at the end.</p>
+
+    <h2>1. Create a module</h2>
+    <p>Start from an empty folder (or use the repo’s <code>examples/quickstart</code> if you cloned it):</p>
+    <div class="code" data-title="terminal"><pre><code class="language-bash">mkdir hello-agent &amp;&amp; cd hello-agent
+go mod init example.com/hello-agent
+go get github.com/ganeshdipdumbare/kritrim@v1.0.0</code></pre></div>
+
+    <h2>2. Pick a model provider</h2>
+    <p>The model is one value you hand to <code>kritrim.New</code>. The rest of your code stays the same no matter which provider is behind it. Pick the tab for a provider you already have access to, set the env var, then create <code>main.go</code> with that snippet.</p>
+
+    <div class="tabs" data-tabs="quickstart-provider" id="qs-provider">
+      <div class="tablist" role="tablist" aria-label="Model provider">
+        <button type="button" role="tab" data-tab="anthropic" aria-selected="true">Anthropic</button>
+        <button type="button" role="tab" data-tab="openai" aria-selected="false">OpenAI</button>
+        <button type="button" role="tab" data-tab="gemini" aria-selected="false">Gemini</button>
+        <button type="button" role="tab" data-tab="bedrock" aria-selected="false">Bedrock</button>
+        <button type="button" role="tab" data-tab="ollama" aria-selected="false">Ollama</button>
+        <button type="button" role="tab" data-tab="mock" aria-selected="false">Mock (offline)</button>
+      </div>
+      <div class="tabpanel" data-panel="anthropic">
+        <p>Set a key, then create <code>main.go</code>:</p>
+        <div class="code" data-title="terminal"><pre><code class="language-bash">export ANTHROPIC_API_KEY=sk-ant-...</code></pre></div>
+        <div class="code" data-title="main.go"><pre><code class="language-go">package main
 
 import (
 	"context"
@@ -346,130 +383,348 @@ func main() {
 	}
 	defer a.Close()
 
-	res, err := a.Run(context.Background(), "Say hello in five words.")
+	res, err := a.Run(context.Background(), "What is an agent, in one sentence?")
 	if err != nil {
 		log.Fatal(err)
 	}
 	fmt.Println(res.Text)
 }</code></pre></div>
-    <p>No key? Use <code>kritrim.Mock(kritrim.Turn{Text: "hello"})</code> and the same code runs offline.</p>
+      </div>
+      <div class="tabpanel" data-panel="openai" hidden>
+        <p>Set a key, then create <code>main.go</code>:</p>
+        <div class="code" data-title="terminal"><pre><code class="language-bash">export OPENAI_API_KEY=sk-...</code></pre></div>
+        <div class="code" data-title="main.go"><pre><code class="language-go">package main
 
-    <h2>A typed tool</h2>
-    <div class="code" data-title="go"><pre><code class="language-go">func weather(ctx context.Context, in struct {
+import (
+	"context"
+	"fmt"
+	"log"
+
+	"github.com/ganeshdipdumbare/kritrim"
+)
+
+func main() {
+	a, err := kritrim.New(kritrim.Config{
+		Model:        kritrim.OpenAI("gpt-4.1"),
+		Instructions: "You are concise.",
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer a.Close()
+
+	res, err := a.Run(context.Background(), "What is an agent, in one sentence?")
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(res.Text)
+}</code></pre></div>
+      </div>
+      <div class="tabpanel" data-panel="gemini" hidden>
+        <p>Set a key, then create <code>main.go</code>:</p>
+        <div class="code" data-title="terminal"><pre><code class="language-bash">export GEMINI_API_KEY=...</code></pre></div>
+        <div class="code" data-title="main.go"><pre><code class="language-go">package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+
+	"github.com/ganeshdipdumbare/kritrim"
+)
+
+func main() {
+	a, err := kritrim.New(kritrim.Config{
+		Model:        kritrim.Gemini("gemini-2.5-flash"),
+		Instructions: "You are concise.",
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer a.Close()
+
+	res, err := a.Run(context.Background(), "What is an agent, in one sentence?")
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(res.Text)
+}</code></pre></div>
+      </div>
+      <div class="tabpanel" data-panel="bedrock" hidden>
+        <p>Give the process AWS credentials that can call Bedrock Converse (env vars, <code>aws configure</code>, or an instance role), and enable the model in the Bedrock console for your region:</p>
+        <div class="code" data-title="terminal"><pre><code class="language-bash">export AWS_REGION=us-west-2
+# plus AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY, or an IAM role</code></pre></div>
+        <div class="code" data-title="main.go"><pre><code class="language-go">package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+
+	"github.com/ganeshdipdumbare/kritrim"
+)
+
+func main() {
+	a, err := kritrim.New(kritrim.Config{
+		Model:        kritrim.Bedrock("anthropic.claude-sonnet-5-5"),
+		Instructions: "You are concise.",
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer a.Close()
+
+	res, err := a.Run(context.Background(), "What is an agent, in one sentence?")
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(res.Text)
+}</code></pre></div>
+      </div>
+      <div class="tabpanel" data-panel="ollama" hidden>
+        <p>Runs locally. No cloud key. Start Ollama and pull a model first:</p>
+        <div class="code" data-title="terminal"><pre><code class="language-bash">ollama serve
+ollama pull llama3.1</code></pre></div>
+        <div class="code" data-title="main.go"><pre><code class="language-go">package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+
+	"github.com/ganeshdipdumbare/kritrim"
+)
+
+func main() {
+	a, err := kritrim.New(kritrim.Config{
+		Model:        kritrim.Ollama("llama3.1"),
+		Instructions: "You are concise.",
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer a.Close()
+
+	res, err := a.Run(context.Background(), "What is an agent, in one sentence?")
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(res.Text)
+}</code></pre></div>
+      </div>
+      <div class="tabpanel" data-panel="mock" hidden>
+        <p>No network and no key. The mock model returns the turns you script — useful for CI and for learning the loop offline:</p>
+        <div class="code" data-title="main.go"><pre><code class="language-go">package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+
+	"github.com/ganeshdipdumbare/kritrim"
+)
+
+func main() {
+	a, err := kritrim.New(kritrim.Config{
+		Model:        kritrim.Mock(kritrim.Turn{Text: "An agent is a model that can call tools in a loop."}),
+		Instructions: "You are concise.",
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer a.Close()
+
+	res, err := a.Run(context.Background(), "What is an agent, in one sentence?")
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(res.Text)
+}</code></pre></div>
+      </div>
+    </div>
+
+    <h2>3. Run it</h2>
+    <div class="code" data-title="terminal"><pre><code class="language-bash">go run .</code></pre></div>
+    <p>You should see one sentence printed to the terminal. That is <code>Result.Text</code> from a finished run.</p>
+    <p>Don’t see your provider? kritrim also supports DeepSeek, Groq, Mistral, OpenRouter, LiteLLM and any OpenAI-compatible endpoint via <code>Compatible</code>. See <a href="#providers">Providers</a>.</p>
+
+    <h2>4. Add a typed tool</h2>
+    <p>You now have a working agent loop, but the agent has nothing to act with — it can only answer from what the model already knows. A tool is a Go function the model can decide to call. The schema is derived from the argument type; you never hand-write JSON Schema for a typed tool.</p>
+    <p>Replace your agent setup with this (keep the same <code>Model</code> line from your provider tab, or use the mock turns below to stay offline):</p>
+    <div class="code" data-title="main.go"><pre><code class="language-go">func weather(ctx context.Context, in struct {
 	City string `json:"city" desc:"city name"`
 }) (string, error) {
 	return "18C and light rain in " + in.City, nil
 }
 
-a, _ := kritrim.New(kritrim.Config{
-	Model: kritrim.Mock(
-		kritrim.TurnTool("weather", map[string]any{"city": "Lisbon"}),
-		kritrim.Turn{Text: "It is raining in Lisbon."},
-	),
-	Tools: []kritrim.Tool{kritrim.NewTool("weather", "Get the weather", weather)},
-})
-defer a.Close()
+func main() {
+	a, err := kritrim.New(kritrim.Config{
+		Model: kritrim.Mock(
+			kritrim.TurnTool("weather", map[string]any{"city": "Lisbon"}),
+			kritrim.Turn{Text: "It is raining in Lisbon."},
+		),
+		Tools: []kritrim.Tool{
+			kritrim.NewTool("weather", "Get the weather", weather),
+		},
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer a.Close()
 
-res, _ := a.Run(ctx, "What is the weather in Lisbon?")</code></pre></div>
-    <p>The schema comes from the Go type. A string result goes to the model as is; anything else is JSON.</p>
+	res, err := a.Run(context.Background(), "What is the weather in Lisbon?")
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(res.Text)
+}</code></pre></div>
+    <p>Run it again. With the mock model you will always get the scripted tool call and final text. With a live model, it should choose <code>weather</code>, pass <code>city</code>, and answer from the tool result. A string result goes to the model as-is; any other return type is JSON-encoded.</p>
 
-    <h2>Stream</h2>
-    <div class="code" data-title="go"><pre><code class="language-go">for e, err := range a.Stream(ctx, "Plan a trip") {
-	if err != nil { break }
+    <div class="what-happened"><b>What just happened</b>
+      <p><code>New</code> builds an agent from a config. <code>Run</code> sends your prompt, lets the model call tools in a loop, and returns a <code>Result</code> with the final text, the steps taken, token usage and a stop reason. Breaking out of <code>Stream</code> early cancels the run and cleans up — covered next.</p>
+    </div>
+
+    <h2>5. Stream events (optional)</h2>
+    <p>When you want tokens as they arrive — or to watch tool calls live — use <code>Stream</code> instead of <code>Run</code>. It returns an <code>iter.Seq2</code>; breaking the loop cancels the run.</p>
+    <div class="code" data-title="go"><pre><code class="language-go">for e, err := range a.Stream(ctx, "Plan a weekend in Lisbon") {
+	if err != nil {
+		break
+	}
 	switch e.Type {
-	case "text":        fmt.Print(e.Text)
-	case "tool_call":   fmt.Println("->", e.ToolCall.Name)
-	case "tool_result": fmt.Println("<-", e.ToolResult.Content)
-	case "approval":    fmt.Println("?", e.Approval.Message)
+	case kritrim.EventText:
+		fmt.Print(e.Text)
+	case kritrim.EventToolCall:
+		fmt.Println("→", e.ToolCall.Name)
+	case kritrim.EventToolResult:
+		fmt.Println("←", e.ToolResult.Content)
 	}
 }</code></pre></div>
+    <p>Event type strings are named constants (<code>EventText</code>, <code>EventToolCall</code>, …). Full event list: <a href="#streaming">Streaming</a>.</p>
 
-    <h2>A saved conversation</h2>
-    <div class="code" data-title="go"><pre><code class="language-go">a, _ := kritrim.New(kritrim.Config{
-	Model:   "anthropic:claude-sonnet-5-5",
+    <h2>6. Save a conversation (optional)</h2>
+    <p>Without a session store, every <code>Run</code> starts fresh. Point <code>Config.Session</code> at a store and pass the same <code>Thread</code> id to continue a conversation:</p>
+    <div class="code" data-title="go"><pre><code class="language-go">a, err := kritrim.New(kritrim.Config{
+	Model:   model, // the Model value from your provider tab
 	Session: kritrim.FileSessions(".agent/sessions"),
 })
+if err != nil {
+	log.Fatal(err)
+}
 defer a.Close()
 
+ctx := context.Background()
 a.Run(ctx, "My name is Ada.", kritrim.Thread("user-42"))
 res, _ := a.Run(ctx, "What is my name?", kritrim.Thread("user-42"))
-fmt.Println(res.Text) // sees the earlier turn</code></pre></div>
-    <div class="note"><b>Offline first</b><div><p>Every example in the repository compiles and runs against the mock model, so the docs cannot drift from the API.</p></div></div>
+fmt.Println(res.Text) // remembers Ada</code></pre></div>
+    <p>Sessions also hold paused approvals and a small key-value state bag. Details: <a href="#sessions">Sessions and state</a>.</p>
+
+    <div class="note"><b>Offline first</b><div><p>Every example under <code>examples/</code> in the repository compiles and runs against the mock model, so CI and these docs cannot drift from the API.</p></div></div>
+
+    <div class="next-steps"><b>Next steps</b>
+      <ul>
+        <li><a href="#tools">Tools</a> — schemas, risky tools, built-ins (HTTP, shell, files…).</li>
+        <li><a href="#providers">Providers</a> — reasoning effort, guardrails, routing and fallback.</li>
+        <li><a href="#approvals">Approvals</a> — gate destructive tools before they run.</li>
+        <li><a href="#concepts">Concepts</a> — the glossary for the rest of the docs.</li>
+      </ul>
+    </div>
   </section>
 
   <section id="concepts" class="page">
     <h1>Concepts</h1>
-    <p class="lede">The words used across these docs, in one place.</p>
+    <p class="lede">These are the words the rest of the docs use. Skim once after the quickstart; come back when a guide names something new.</p>
+
+    <h2>The loop in one picture</h2>
+    <p>You call <code>Run</code> (or <code>Stream</code>). kritrim sends the prompt to the model. If the model asks for tools, kritrim runs them (after schema checks, policy and any approval), feeds the results back, and repeats until the model answers or a stop condition hits. That whole cycle is one <b>run</b>; each model round-trip inside it is a <b>step</b>.</p>
+
     <div class="table"><table>
       <thead><tr><th>Term</th><th>What it is</th></tr></thead>
       <tbody>
-        <tr><td><b>Agent</b></td><td>What <code>kritrim.New(Config)</code> returns: a model, tools, hooks, a session store and optional sandbox.</td></tr>
+        <tr><td><b>Agent</b></td><td>What <code>kritrim.New(Config)</code> returns: a model, tools, hooks, a session store and an optional sandbox.</td></tr>
         <tr><td><b>Run</b></td><td>One <code>Run</code> or <code>Stream</code> call. It ends with a <code>Result</code>: text, steps, usage, stop reason and interrupts.</td></tr>
-        <tr><td><b>Step</b></td><td>One model call inside a run, plus the tool calls it asked for.</td></tr>
-        <tr><td><b>Tool</b></td><td>A typed Go function with a name, a derived JSON Schema and a result.</td></tr>
-        <tr><td><b>Session</b></td><td>A conversation stored under an id (<code>Thread("id")</code>), including paused approvals. Memory, file or SQL.</td></tr>
-        <tr><td><b>Hook</b></td><td>A callback around the run, a model call or a tool call. Hooks can observe and shape; built-in security runs first.</td></tr>
-        <tr><td><b>Approval</b></td><td>A risky tool asks <code>Config.Approve</code>. The decision can be synchronous or a durable pause.</td></tr>
-        <tr><td><b>Interrupt</b></td><td>A paused approval with a stable id. Resume with <code>Decisions</code>.</td></tr>
-        <tr><td><b>Sandbox</b></td><td>Where shell and file tools run: Docker, Local (development) or SSH.</td></tr>
-        <tr><td><b>Sealed</b></td><td>The whole agent runs in a sandbox. The host only brokers model calls, secrets, tools, audit and approvals.</td></tr>
+        <tr><td><b>Step</b></td><td>One model call inside a run, plus the tool calls that call asked for.</td></tr>
+        <tr><td><b>Tool</b></td><td>A typed Go function with a name, a derived JSON Schema and a result. Built-ins and MCP tools look the same to the model.</td></tr>
+        <tr><td><b>Session</b></td><td>A conversation stored under an id (<code>Thread("id")</code>), including paused approvals and a small state bag.</td></tr>
+        <tr><td><b>Hook</b></td><td>A callback around the run, a model call or a tool call. Hooks can observe and shape; built-in security hooks run first.</td></tr>
+        <tr><td><b>Approval</b></td><td>A risky tool asks <code>Config.Approve</code> before it runs. The decision can be synchronous or a durable pause.</td></tr>
+        <tr><td><b>Interrupt</b></td><td>A paused approval with a stable id. Resume later with <code>Decisions</code>.</td></tr>
+        <tr><td><b>Sandbox</b></td><td>Where shell and file tools run: Docker, Local (dev only), SSH, or a cloud / microVM adapter.</td></tr>
+        <tr><td><b>Sealed</b></td><td>The whole agent process runs inside a sandbox. The host keeps the keys and brokers model calls, secrets, tools, audit and approvals.</td></tr>
         <tr><td><b>Broker</b></td><td>The one path built-in tools use for network, processes and files. It enforces allowlists, SSRF checks and redaction.</td></tr>
       </tbody>
     </table></div>
+
+    <div class="next-steps"><b>Next steps</b>
+      <ul>
+        <li><a href="#tools">Tools</a> — define your first real tool beyond the quickstart.</li>
+        <li><a href="#sessions">Sessions and state</a> — multi-turn conversations that survive restarts.</li>
+        <li><a href="#security">Security</a> — the defaults that already protect every agent.</li>
+      </ul>
+    </div>
   </section>
 
   <section id="providers" class="page">
     <h1>Providers</h1>
-    <p class="lede">A model is a value. Constructors return the one interface the loop uses.</p>
-    <div class="code" data-title="go"><pre><code class="language-go">kritrim.OpenAI("gpt-4.1")                  // OPENAI_API_KEY
-kritrim.OpenAIResponses("gpt-5")           // Responses API
-kritrim.Anthropic("claude-sonnet-5-5")     // ANTHROPIC_API_KEY
-kritrim.Gemini("gemini-2.5-pro")           // GEMINI_API_KEY
-kritrim.Bedrock("anthropic.claude-sonnet-5-5") // AWS SigV4, Converse
-kritrim.Ollama("llama3")                   // localhost:11434
-kritrim.DeepSeek("deepseek-chat")
-kritrim.Groq("llama-3.3-70b-versatile")
-kritrim.Mistral("mistral-large-latest")
-kritrim.OpenRouter("anthropic/claude-sonnet-5-5")
+    <p class="lede">This guide shows how to pick a model, set credentials, tune reasoning and guardrails, and fall back when a call fails. A model is one value; the agent loop does not care which constructor made it.</p>
+
+    <h2>1. Choose a constructor</h2>
+    <p>Each constructor reads its API key from the environment unless you pass <code>ModelConfig.APIKey</code>. Set the env var before you run:</p>
+    <div class="code" data-title="go"><pre><code class="language-go">kritrim.OpenAI("gpt-4.1")                       // OPENAI_API_KEY
+kritrim.OpenAIResponses("gpt-5")                // Responses API, same key
+kritrim.Anthropic("claude-sonnet-5-5")          // ANTHROPIC_API_KEY
+kritrim.Gemini("gemini-2.5-pro")                // GEMINI_API_KEY
+kritrim.Bedrock("anthropic.claude-sonnet-5-5")  // AWS SigV4 + region
+kritrim.Ollama("llama3")                        // localhost:11434, no key
+kritrim.DeepSeek("deepseek-chat")               // DEEPSEEK_API_KEY
+kritrim.Groq("llama-3.3-70b-versatile")         // GROQ_API_KEY
+kritrim.Mistral("mistral-large-latest")         // MISTRAL_API_KEY
+kritrim.OpenRouter("anthropic/claude-sonnet-5-5") // OPENROUTER_API_KEY
 kritrim.LiteLLM("http://gateway:4000", "gpt-4.1")
 kritrim.Compatible("provider", "https://host/v1", "model")
 kritrim.Mock(kritrim.Turn{Text: "offline"})</code></pre></div>
-    <h2>Configuration</h2>
+    <p>Bedrock uses the default AWS credential chain and <code>AWS_REGION</code> or <code>AWS_DEFAULT_REGION</code>.</p>
+
+    <h2>2. Point at a gateway (optional)</h2>
+    <p>Pass <code>ModelConfig</code> for a custom base URL, headers or timeout:</p>
     <div class="code" data-title="go"><pre><code class="language-go">model := kritrim.OpenAI("gpt-4.1", kritrim.ModelConfig{
 	BaseURL: "https://gateway.internal/v1",
 	Headers: map[string]string{"X-Team": "support"},
 	Timeout: 2 * time.Minute,
 })</code></pre></div>
-    <h2>Reasoning</h2>
-    <p>One setting, five providers. <code>Effort</code> becomes Anthropic extended thinking, OpenAI <code>reasoning_effort</code>, Responses <code>reasoning.effort</code>, Gemini <code>thinkingConfig</code> and Bedrock <code>reasoning_config</code>.</p>
-    <div class="code" data-title="go"><pre><code class="language-go">a, _ := kritrim.New(kritrim.Config{
+
+    <h2>3. Turn on reasoning</h2>
+    <p>One <code>Reasoning</code> setting maps across five providers (Anthropic extended thinking, OpenAI <code>reasoning_effort</code>, Responses, Gemini <code>thinkingConfig</code>, Bedrock <code>reasoning_config</code>):</p>
+    <div class="code" data-title="go"><pre><code class="language-go">a, err := kritrim.New(kritrim.Config{
 	Model:     kritrim.Anthropic("claude-sonnet-5-5"),
-	Reasoning: &kritrim.Reasoning{Effort: "high"}, // low | medium | high
+	Reasoning: &amp;kritrim.Reasoning{Effort: "high"}, // low | medium | high
 })</code></pre></div>
-    <p><code>Budget</code> sets the thinking-token allowance exactly; the effort levels map to 1024, 4096 and 16384. <code>Include: true</code> streams the thinking back as <code>reasoning</code> events where the provider returns it.</p>
-    <div class="note"><b>Thinking tokens are output tokens</b><div><p>They count against <code>MaxOutputTokens</code> and the run's budget. A budget that cannot hold the thinking allowance is refused before the call, rather than capped into a provider error. Anthropic requires its thinking blocks to come back with their signature before it will accept a tool result, so kritrim keeps them on the assistant message and replays them.</p></div></div>
-    <h2>Guardrails</h2>
-    <p>A provider guardrail screens what goes in and what comes out. For Bedrock it runs inside the Converse call; for any model, <code>guard.Bedrock</code> applies the same guardrail with ApplyGuardrail and fails closed.</p>
+    <p><code>Budget</code> sets the thinking-token allowance exactly; effort levels map to 1024, 4096 and 16384. <code>Include: true</code> streams thinking as <code>reasoning</code> events where the provider returns it.</p>
+    <div class="note"><b>Thinking tokens are output tokens</b><div><p>They count against <code>MaxOutputTokens</code> and the run's budget. A budget that cannot hold the thinking allowance is refused before the call. Anthropic requires thinking blocks (with signature) before a tool result — kritrim keeps and replays them.</p></div></div>
+
+    <h2>4. Attach a guardrail</h2>
+    <p>On Bedrock the guardrail runs inside Converse. For any model, <code>guard.Bedrock</code> calls ApplyGuardrail and fails closed. Needs AWS credentials that can invoke the guardrail.</p>
     <div class="code" data-title="go"><pre><code class="language-go">model := kritrim.Bedrock("anthropic.claude-sonnet-5-5", kritrim.ModelConfig{
-	Guardrail: &kritrim.Guardrail{ID: "gr-123", Version: "1"},
+	Guardrail: &amp;kritrim.Guardrail{ID: "gr-123", Version: "1"},
 })
 
-// Any provider: prompts, replies and (with Tools) tool results.
-hooks, _ := guard.Bedrock(guard.BedrockConfig{ID: "gr-123", Version: "1", Tools: true})</code></pre></div>
-    <p>Other providers refuse <code>ModelConfig.Guardrail</code> at <code>New</code> instead of ignoring it. When any provider's safety system blocks a reply (Bedrock <code>guardrail_intervened</code>, OpenAI <code>content_filter</code>, Anthropic <code>refusal</code>, Gemini <code>SAFETY</code>), the run ends with <code>kritrim.StopGuardrail</code> and that reply's tool calls do not run.</p>
-    <h2>Routing and fallback</h2>
-    <p><code>Route</code> decides up front, per run. <code>Fallback</code> reacts to a failure. They compose — fallbacks apply to whatever <code>Route</code> chose, and the audit log records the model the run actually used.</p>
-    <div class="code" data-title="go"><pre><code class="language-go">a, _ := kritrim.New(kritrim.Config{
+hooks, err := guard.Bedrock(guard.BedrockConfig{ID: "gr-123", Version: "1", Tools: true})</code></pre></div>
+    <p>Other providers refuse <code>ModelConfig.Guardrail</code> at <code>New</code>. When a provider safety system blocks a reply, the run ends with <code>StopGuardrail</code> and that reply's tool calls do not run.</p>
+
+    <h2>5. Route and fall back</h2>
+    <p><code>Route</code> chooses a model up front. <code>Fallback</code> reacts after failure. They compose, and the audit log records the model actually used.</p>
+    <div class="code" data-title="go"><pre><code class="language-go">a, err := kritrim.New(kritrim.Config{
 	Model: small,
 	Route: func(ctx context.Context, prompt string) kritrim.Model {
-		if len(prompt) > 500 {
+		if len(prompt) &gt; 500 {
 			return large
 		}
 		return nil // nil means Config.Model
 	},
 	Fallback: []kritrim.Model{kritrim.OpenAI("gpt-4.1")},
-	Retry:    &kritrim.Retry{Max: 3},
+	Retry:    &amp;kritrim.Retry{Max: 3},
 })</code></pre></div>
+
+    <h2>Capability matrix</h2>
     <div class="table"><table>
       <thead><tr><th>Capability</th><th>OpenAI-compatible</th><th>Anthropic</th><th>Gemini</th><th>Bedrock</th></tr></thead>
       <tbody>
@@ -480,11 +735,24 @@ hooks, _ := guard.Bedrock(guard.BedrockConfig{ID: "gr-123", Version: "1", Tools:
         <tr><td>Prompt cache</td><td>automatic</td><td><code>PromptCache</code></td><td>—</td><td>—</td></tr>
       </tbody>
     </table></div>
+
+    <div class="next-steps"><b>Next steps</b>
+      <ul>
+        <li><a href="#tools">Tools</a> — give the model something to call.</li>
+        <li><a href="#structured-output">Structured output</a> — ask for a Go type instead of free text.</li>
+        <li><a href="#security">Security</a> — budgets, redaction and defaults.</li>
+      </ul>
+    </div>
   </section>
 
-  <section id="tools" class="page">
+
+
+    <section id="tools" class="page">
     <h1>Tools</h1>
-    <p class="lede">The schema is derived from the Go type; the callable is not exported, so <code>NewTool</code> is the only way to define one.</p>
+    <p class="lede">This guide takes you to a working typed tool: derive a schema from a Go struct, register it on an agent, then layer parallel calls, risky approvals and the built-ins (HTTP, shell, files, Python…). Credentials stay on the process that constructs the agent — tools never need your model API key.</p>
+
+    <h2>1. Define a typed tool</h2>
+    <p>The schema comes from the argument type. Tags drive the JSON the model sees: <code>json</code> for names, <code>desc</code> for help text, <code>enum</code> for allowed values. <code>omitempty</code> or a pointer makes a field optional. You never hand-write JSON Schema for a typed tool.</p>
     <div class="code" data-title="go"><pre><code class="language-go">type SearchIn struct {
 	Query string `json:"query" desc:"what to look for"`
 	Limit int    `json:"limit,omitempty" desc:"max results"`
@@ -496,28 +764,48 @@ search := kritrim.NewTool("search_tickets", "Search support tickets",
 		return db.Search(ctx, in.Query, in.Limit)
 	})
 
-a, _ := kritrim.New(kritrim.Config{Model: model, Tools: []kritrim.Tool{search}})</code></pre></div>
-    <ul>
-      <li><b>Tags:</b> <code>json</code>, <code>desc</code> and <code>enum</code>. <code>omitempty</code> or a pointer makes a field optional.</li>
-      <li><b>Results:</b> a string goes to the model as is; anything else is JSON.</li>
-      <li><b>Errors:</b> a returned error becomes an error tool result, so the model can recover.</li>
-      <li><b>Risky:</b> <code>kritrim.Risky(tool)</code> asks <code>Config.Approve</code> before the call.</li>
-      <li><b>Validated:</b> the model's arguments are checked against the schema before the tool runs, for typed, raw and MCP tools alike: types, required fields, <code>enum</code>/<code>const</code>, unknown fields, string length and <code>pattern</code>, numeric ranges, array sizes, <code>anyOf</code>/<code>oneOf</code>/<code>allOf</code>/<code>not</code> and local <code>$ref</code>. A schema keyword that cannot be enforced (a remote <code>$ref</code>, <code>if</code>/<code>then</code>, <code>patternProperties</code>…) makes the call fail instead of passing unchecked.</li>
-    </ul>
-    <h2>Parallel calls</h2>
-    <p>One model step can ask for several tools. <code>ToolConcurrency</code> runs them together; risky tools always stay sequential so approvals keep their order.</p>
-    <div class="code" data-title="go"><pre><code class="language-go">a, _ := kritrim.New(kritrim.Config{
+a, err := kritrim.New(kritrim.Config{
+	Model: model, // same Model value as in Quickstart / Providers
+	Tools: []kritrim.Tool{search},
+})
+if err != nil {
+	log.Fatal(err)
+}
+defer a.Close()</code></pre></div>
+    <p>A string result goes to the model as-is; any other return type is JSON-encoded. A returned error becomes an error tool result so the model can recover. The callable itself is not exported — <code>NewTool</code> is the only way to define a typed tool.</p>
+
+    <div class="what-happened"><b>What just happened</b>
+      <p>kritrim derived a JSON Schema from <code>SearchIn</code>, registered the tool on the agent, and will validate every model-supplied argument against that schema before your function runs.</p>
+    </div>
+
+    <h2>2. Understand validation</h2>
+    <p>Arguments are checked for typed, raw and MCP tools alike: types, required fields, <code>enum</code>/<code>const</code>, unknown fields, string length and <code>pattern</code>, numeric ranges, array sizes, <code>anyOf</code>/<code>oneOf</code>/<code>allOf</code>/<code>not</code> and local <code>$ref</code>. A schema keyword that cannot be enforced (a remote <code>$ref</code>, <code>if</code>/<code>then</code>, <code>patternProperties</code>…) makes the call fail instead of passing unchecked.</p>
+
+    <h2>3. Run tools in parallel</h2>
+    <p>One model step can ask for several tools. <code>ToolConcurrency</code> runs safe tools together; risky tools always stay sequential so approvals keep their order.</p>
+    <div class="code" data-title="go"><pre><code class="language-go">a, err := kritrim.New(kritrim.Config{
 	Model:           model,
 	Tools:           tools,
 	ToolConcurrency: 4,
 })</code></pre></div>
-    <h2>Direct calls</h2>
+
+    <h2>4. Call a tool yourself</h2>
+    <p>When you want the same validation path without a model turn — tests, UIs, or a manual retry — use <code>CallTool</code>:</p>
     <div class="code" data-title="go"><pre><code class="language-go">out, err := a.CallTool(ctx, "search_tickets", map[string]any{"query": "refund"})</code></pre></div>
-    <h2>Dynamic schemas</h2>
-    <p>MCP servers and simulators need a schema they did not get from a Go struct:</p>
+
+    <h2>5. Use a dynamic schema (optional)</h2>
+    <p>MCP servers and simulators often bring a schema that did not come from a Go struct. <code>NewRawTool</code> takes that schema and a <code>map[string]any</code> handler:</p>
     <div class="code" data-title="go"><pre><code class="language-go">t := kritrim.NewRawTool("lookup", "Look up a record", schema,
-	func(ctx context.Context, args map[string]any) (string, error) { ... })</code></pre></div>
-    <h2>Built-in tools</h2>
+	func(ctx context.Context, args map[string]any) (string, error) {
+		return lookup(ctx, args)
+	})</code></pre></div>
+
+    <h2>6. Mark a tool as risky</h2>
+    <p>Wrap with <code>kritrim.Risky</code> so the agent asks <code>Config.Approve</code> before the call. Details and durable pauses: <a href="#approvals">Approvals</a>.</p>
+    <div class="code" data-title="go"><pre><code class="language-go">Tools: []kritrim.Tool{kritrim.Risky(refund)}</code></pre></div>
+
+    <h2>7. Add built-in tools</h2>
+    <p>Built-ins go through the same broker as your tools. Constructing one is the grant: HTTP and shell refuse an empty allowlist; files are read-only unless <code>Write: true</code>. No separate credentials file — use env vars or <code>Config.Secrets</code> for values tools resolve via <code>secret://</code>.</p>
     <div class="code" data-title="go"><pre><code class="language-go">kritrim.Time()
 kritrim.HTTP(kritrim.HTTPConfig{AllowHosts: []string{"api.example.com"}})
 kritrim.WebFetch(kritrim.WebFetchConfig{AllowHosts: []string{"*.wikipedia.org"}})
@@ -533,28 +821,56 @@ kritrim.Notebook()
 kritrim.Sleep(30 * time.Second)
 kritrim.Stop()
 kritrim.AskUser()</code></pre></div>
-    <h3>Web fetch</h3>
-    <p><code>WebFetch</code> is <code>HTTP</code> for reading: one GET, and HTML turned into readable text instead of markup. A page of HTML is mostly tags, scripts and navigation, and sending that raw spends the context window on nothing. Use <code>HTTP</code> when the model needs methods, headers and the exact response; use <code>WebFetch</code> when it needs to read something. A page that builds its content in the browser comes back nearly empty — there is no DOM and no JavaScript.</p>
+
+    <h2>Web fetch</h2>
+    <p><code>WebFetch</code> is HTTP for reading: one GET, with HTML turned into readable text. Use <code>HTTP</code> when the model needs methods, headers and the exact response; use <code>WebFetch</code> when it needs to read a page. A page that builds its content in the browser comes back nearly empty — there is no DOM and no JavaScript.</p>
     <div class="note warn"><b>A page is data, not instructions</b><div><p>Fetched text reaches the model as a tool result. A page that says "ignore your instructions" is a page saying so, not a user asking. Keep the allowlist as narrow as the task.</p></div></div>
-    <h3>Todos</h3>
-    <p>A long task drifts: the model finishes step two, forgets steps four and five, and declares victory. <code>Todos</code> keeps the plan in session state, so it survives a pause, a resume and a restart along with the conversation, and it refuses a list with two items in progress. Put "keep the todo list current" in <code>Instructions</code>; the tool stores a plan, it does not enforce one.</p>
-    <h3>Python</h3>
-    <div class="code" data-title="go"><pre><code class="language-go">a, _ := kritrim.New(kritrim.Config{
+
+    <h2>Todos</h2>
+    <p>A long task drifts: the model finishes step two, forgets steps four and five, and declares victory. <code>Todos</code> keeps the plan in session state so it survives a pause, a resume and a restart. Put "keep the todo list current" in <code>Instructions</code>; the tool stores a plan, it does not enforce one.</p>
+
+    <h2>Python in a sandbox</h2>
+    <p>This is the one built-in whose argument cannot be checked: an allowlist constrains a command, and Python is a language. It is risky, requires <code>Config.Sandbox</code> (or sealed mode), and refuses to run on the host unless you set <code>AllowUnsafeHost</code>. The code reaches the interpreter on stdin — no shell, nothing to quote. Docker must be available if you use the Docker sandbox.</p>
+    <div class="code" data-title="go"><pre><code class="language-go">a, err := kritrim.New(kritrim.Config{
 	Model:   model,
 	Tools:   []kritrim.Tool{kritrim.Python(kritrim.PythonConfig{})},
 	Sandbox: kritrim.Docker(kritrim.DockerConfig{Image: "python:3.13-slim"}),
 	Approve: approve,
 })</code></pre></div>
-    <p>This is the one built-in tool whose argument cannot be checked: an allowlist constrains a command, and Python is a language. It is risky, it requires <code>Config.Sandbox</code> (or sealed mode), and it refuses to run on the host unless you set <code>AllowUnsafeHost</code>. The code reaches the interpreter on stdin, so there is no shell and nothing to quote.</p>
+
+    <div class="next-steps"><b>Next steps</b>
+      <ul>
+        <li><a href="#approvals">Approvals</a> — gate risky tools before they run.</li>
+        <li><a href="#security">Security</a> — allowlists, SSRF checks and secrets.</li>
+        <li><a href="#streaming">Streaming</a> — watch tool calls as events.</li>
+        <li><a href="#mcp">MCP</a> — pull in remote tools with the same rules.</li>
+      </ul>
+    </div>
   </section>
 
-  <section id="streaming" class="page">
+
+    <section id="streaming" class="page">
     <h1>Streaming</h1>
-    <p><code>Stream</code> returns an <code>iter.Seq2</code>. Breaking out early cancels the run and cleans up.</p>
+    <p class="lede">This guide takes you from a blocking <code>Run</code> to live events: stream text deltas, watch tool calls, and cancel cleanly when the consumer stops reading. No extra credentials — use the same agent and model as in the quickstart.</p>
+
+    <h2>1. Stream instead of Run</h2>
+    <p><code>Stream</code> returns an <code>iter.Seq2</code>. Breaking out of the loop cancels the run and cleans up in-flight work. Use the same <code>context.Context</code> and prompt options you would pass to <code>Run</code>.</p>
     <div class="code" data-title="go"><pre><code class="language-go">for e, err := range a.Stream(ctx, "A haiku about Lisbon") {
-	if err != nil { break }
-	if e.Type == kritrim.EventText { fmt.Print(e.Text) }
+	if err != nil {
+		break
+	}
+	if e.Type == kritrim.EventText {
+		fmt.Print(e.Text)
+	}
 }</code></pre></div>
+    <p>You should see tokens print as they arrive (or one chunk on providers that only deliver a single delta).</p>
+
+    <div class="what-happened"><b>What just happened</b>
+      <p>The agent loop ran the same way as <code>Run</code>, but each step emitted typed events instead of waiting for a finished <code>Result</code>. Leaving the range early cancelled that run.</p>
+    </div>
+
+    <h2>2. Handle the event types</h2>
+    <p>Every type is a named constant (<code>kritrim.EventText</code>, <code>EventToolCall</code>, …, <code>EventInterrupt</code>). Columns below are the event type string and the fields filled on that event:</p>
     <div class="table"><table>
       <thead><tr><th>Event</th><th>Fields</th></tr></thead>
       <tbody>
@@ -569,61 +885,125 @@ kritrim.AskUser()</code></pre></div>
         <tr><td><code>error</code></td><td><code>Err</code></td></tr>
       </tbody>
     </table></div>
-    <p>Every type is a constant (<code>kritrim.EventText</code>, <code>EventToolCall</code>, …, <code>EventInterrupt</code>), and so is every <code>Result.Stop</code>: <code>StopDone</code>, <code>StopMaxSteps</code>, <code>StopInterrupt</code>, <code>StopStopped</code>, <code>StopHook</code>, <code>StopGuardrail</code>.</p>
-    <p>Need a callback without the iterator? <code>kritrim.OnEvent(fn)</code> attaches to <code>Run</code>.</p>
+    <div class="code" data-title="go"><pre><code class="language-go">for e, err := range a.Stream(ctx, "Plan a weekend in Lisbon") {
+	if err != nil {
+		break
+	}
+	switch e.Type {
+	case kritrim.EventText:
+		fmt.Print(e.Text)
+	case kritrim.EventToolCall:
+		fmt.Println("→", e.ToolCall.Name)
+	case kritrim.EventToolResult:
+		fmt.Println("←", e.ToolResult.Content)
+	}
+}</code></pre></div>
+
+    <h2>3. Read the stop reason</h2>
+    <p>When you need a finished <code>Result</code> instead of an iterator, keep using <code>Run</code>. Its <code>Result.Stop</code> uses the same family of constants: <code>StopDone</code>, <code>StopMaxSteps</code>, <code>StopInterrupt</code>, <code>StopStopped</code>, <code>StopHook</code>, <code>StopGuardrail</code>.</p>
+
+    <h2>4. Prefer a callback? (optional)</h2>
+    <p>Attach <code>kritrim.OnEvent(fn)</code> to a <code>Run</code> when you want events without switching to the iterator:</p>
+    <div class="code" data-title="go"><pre><code class="language-go">res, err := a.Run(ctx, "hello", kritrim.OnEvent(func(e kritrim.Event) {
+	if e.Type == kritrim.EventText {
+		fmt.Print(e.Text)
+	}
+}))</code></pre></div>
+
+    <div class="next-steps"><b>Next steps</b>
+      <ul>
+        <li><a href="#sessions">Sessions and state</a> — continue a conversation across runs.</li>
+        <li><a href="#approvals">Approvals</a> — handle <code>interrupt</code> events and resume.</li>
+        <li><a href="#observability">Observability</a> — audit and OTel alongside stream events.</li>
+      </ul>
+    </div>
   </section>
 
-  <section id="sessions" class="page">
+
+    <section id="sessions" class="page">
     <h1>Sessions and state</h1>
-    <p class="lede">A session is a conversation plus a small key-value state. It is version-checked, so two writers cannot silently overwrite each other.</p>
-    <div class="code" data-title="go"><pre><code class="language-go">a, _ := kritrim.New(kritrim.Config{
+    <p class="lede">This guide takes you to a conversation that survives restarts: pick a session store, pass a thread id, then use state, fork, cancel and optional signed history. No cloud credentials are required for file or memory stores; SQL needs a database you already configure.</p>
+
+    <h2>1. Attach a session store</h2>
+    <p>Without a store, every <code>Run</code> starts fresh. Point <code>Config.Session</code> at a store and pass the same <code>Thread</code> id to continue:</p>
+    <div class="code" data-title="go"><pre><code class="language-go">a, err := kritrim.New(kritrim.Config{
 	Model:   model,
 	Session: kritrim.FileSessions(".agent/sessions"),
 	// or kritrim.MemorySessions(), kritrim.SQLSessions(db, cfg)
 })
+if err != nil {
+	log.Fatal(err)
+}
 defer a.Close()
 
 a.Run(ctx, "My name is Ada.", kritrim.Thread("user-42"))
-res, _ := a.Run(ctx, "What is my name?", kritrim.Thread("user-42"))</code></pre></div>
-    <h2>State</h2>
-    <p>Tools and hooks read and write per-session state. It is saved with the session and never sent to the model.</p>
+res, _ := a.Run(ctx, "What is my name?", kritrim.Thread("user-42"))
+fmt.Println(res.Text) // remembers Ada</code></pre></div>
+
+    <div class="what-happened"><b>What just happened</b>
+      <p>The first run saved the turn under <code>user-42</code>. The second run loaded that history, sent it with the new prompt, and saved again. The store is version-checked so two writers cannot silently overwrite each other.</p>
+    </div>
+
+    <h2>2. Read and write session state</h2>
+    <p>Tools and hooks share a small key-value bag on the session. It is saved with the conversation and never sent to the model:</p>
     <div class="code" data-title="go"><pre><code class="language-go">kritrim.StateFrom(ctx).Set("seen", true)
 v := kritrim.StateFrom(ctx).Get("seen")</code></pre></div>
-    <h2>Fork, cancel, idempotency</h2>
+
+    <h2>3. Fork, cancel and idempotency</h2>
+    <p>Fork snapshots a thread (including paused approvals). Cancel stops a run you started with a known id. Idempotency keys make a prompt safe to retry:</p>
     <div class="code" data-title="go"><pre><code class="language-go">a.Fork(ctx, "user-42", "user-42-experiment") // snapshot, including paused state
 a.Cancel("run-7")                            // stop a run started with kritrim.RunID("run-7")
 res, _ := a.Run(ctx, "charge", kritrim.Idempotency("order-1234"))</code></pre></div>
     <div class="note"><b>Conflict</b><div><p>If another process saved the session first, <code>Save</code> returns <code>ErrSessionConflict</code>. Reload and retry; the run never silently loses a turn.</p></div></div>
-    <h2>Signed history</h2>
-    <p>Message history is an instruction channel. An agent replays whatever the store returns and acts on it, so write access to a shared Redis, a database with a wide grant or a mounted volume is write access to the user's instructions. <code>SignedSessions</code> makes the store hold data the agent verifies instead of data it trusts.</p>
+
+    <h2>4. Sign history (optional)</h2>
+    <p>Message history is an instruction channel. An agent replays whatever the store returns, so write access to a shared Redis, a wide DB grant or a mounted volume is write access to the user's instructions. Keep the HMAC key out of the store it protects — load 32+ random bytes from a KMS or secret manager.</p>
     <div class="code" data-title="go"><pre><code class="language-go">key := loadKeyFromKMS() // 32+ random bytes, kept out of the store it protects
-a, _ := kritrim.New(kritrim.Config{
+a, err := kritrim.New(kritrim.Config{
 	Model:   model,
 	Session: kritrim.SignedSessions(kritrim.FileSessions(".agent/sessions"), key),
 })
 
-_, err := a.Run(ctx, "continue", kritrim.Thread("user-42"))
+_, err = a.Run(ctx, "continue", kritrim.Thread("user-42"))
 if errors.Is(err, kritrim.ErrSessionTampered) {
 	// someone edited the stored conversation; nothing was replayed
 }</code></pre></div>
-    <p>Every save is HMAC-SHA256 over the thread id, the messages, the state and any pending approval. A load that does not match is refused, and so is a record with no signature at all: whoever can edit the record can also delete its signature.</p>
+    <p>Every save is HMAC-SHA256 over the thread id, the messages, the state and any pending approval. A load that does not match is refused, and so is a record with no signature at all.</p>
     <div class="note warn"><b>Content, not freshness</b><div><p>The signature catches an edit. It does not catch a deleted session or a rollback to an older signed copy. To migrate a store with unsigned sessions, read each through the plain store and save it once through the signed one.</p></div></div>
+
+    <div class="next-steps"><b>Next steps</b>
+      <ul>
+        <li><a href="#context">Context management</a> — keep long threads inside a token budget.</li>
+        <li><a href="#approvals">Approvals</a> — durable pauses live on the session.</li>
+        <li><a href="#security">Security</a> — audit and limits alongside sessions.</li>
+      </ul>
+    </div>
   </section>
 
-  <section id="context" class="page">
+
+    <section id="context" class="page">
     <h1>Context management</h1>
-    <p class="lede">Keep a long conversation inside a token budget without losing anything on disk.</p>
-    <div class="code" data-title="go"><pre><code class="language-go">a, _ := kritrim.New(kritrim.Config{
+    <p class="lede">This guide takes you to a long conversation that stays inside a token budget: configure <code>ContextConfig</code>, pick a strategy, and optionally estimate tokens yourself. Compaction only changes what is sent to the model — the session store keeps the full history on disk.</p>
+
+    <h2>1. Set a context budget</h2>
+    <p>You need a session store so history exists across turns. Then set <code>MaxTokens</code>, how many recent messages to keep, and a strategy. No extra API key is required for <code>KeepWindow</code>; <code>SummarizeWith</code> needs a model (often a smaller, cheaper one) with its own credentials.</p>
+    <div class="code" data-title="go"><pre><code class="language-go">a, err := kritrim.New(kritrim.Config{
 	Model:   model,
 	Session: kritrim.FileSessions(".agent/sessions"),
-	Context: &kritrim.ContextConfig{
+	Context: &amp;kritrim.ContextConfig{
 		MaxTokens: 60_000,
 		KeepLast:  30,
 		Strategy:  kritrim.SummarizeWith(small, ""), // or KeepWindow(), Summarize(fn)
 	},
 })</code></pre></div>
-    <p>With no <code>ContextConfig</code> the whole history is sent on every step, and a long thread eventually hits the provider's own limit. With one, nothing happens while the history fits. Once it goes over <code>MaxTokens</code>, the strategy decides what the call sends.</p>
-    <h2>Strategies</h2>
+    <p>With no <code>ContextConfig</code> the whole history is sent on every step until the provider's own limit. With one, nothing happens while the history fits; once it goes over <code>MaxTokens</code>, the strategy decides what the call sends.</p>
+
+    <div class="what-happened"><b>What just happened</b>
+      <p>On each model call the run estimates history size. Over budget, the strategy returns a shorter message list for that call only. The stored session still has every turn.</p>
+    </div>
+
+    <h2>2. Pick a strategy</h2>
+    <p>Columns: strategy constructor, what the model receives when compaction runs, and the cost of that choice. <code>KeepLast</code> defaults to 20.</p>
     <div class="table"><table>
       <thead><tr><th>Strategy</th><th>What it sends</th><th>Cost</th></tr></thead>
       <tbody>
@@ -632,23 +1012,36 @@ if errors.Is(err, kritrim.ErrSessionTampered) {
         <tr><td><code>Summarize(fn)</code></td><td>whatever your function returns in place of the dropped messages</td><td>yours</td></tr>
       </tbody>
     </table></div>
-    <p>Use <code>KeepWindow</code> when old turns stop mattering, like a support chat. Use <code>SummarizeWith</code> when an early decision still matters thirty turns later. <code>KeepLast</code> defaults to 20.</p>
-    <h2>Your own strategy</h2>
+    <p>Use <code>KeepWindow</code> when old turns stop mattering (support chat). Use <code>SummarizeWith</code> when an early decision still matters thirty turns later.</p>
+
+    <h2>3. Write your own strategy (optional)</h2>
+    <p><code>Compact</code> gets the full history and returns the messages to send. It must return a valid conversation: a tool result cannot come first, and every tool result it keeps needs the assistant turn that asked for it. The built-in strategies never orphan a tool result.</p>
     <div class="code" data-title="go"><pre><code class="language-go">type Strategy interface {
 	Compact(ctx context.Context, msgs []Message, cfg ContextConfig) ([]Message, error)
 }</code></pre></div>
-    <p><code>Compact</code> gets the full history and returns the messages to send. It must return a valid conversation: a tool result cannot come first, and every tool result it keeps needs the assistant turn that asked for it. The built-in strategies never orphan a tool result.</p>
-    <h2>Estimating tokens</h2>
+
+    <h2>4. Estimate tokens</h2>
+    <p>This is the same estimate the run's token budget uses: about four characters per token plus a small per-message overhead. No network call and no tokenizer. Within about 10% for English prose; under-counts dense JSON, so leave headroom.</p>
     <div class="code" data-title="go"><pre><code class="language-go">n := kritrim.EstimateTokens(msgs)</code></pre></div>
-    <p>This is the same estimate the run's token budget uses: about four characters per token plus a small per-message overhead. It needs no network call and no tokenizer, is within about 10% for English prose, and under-counts dense JSON, so leave headroom.</p>
-    <div class="note"><b>The session keeps everything</b><div><p>A strategy only changes what is sent to the model. The stored session always has the full history, so compaction is reversible: change the strategy and the next run sees the old turns again.</p></div></div>
+    <div class="note"><b>The session keeps everything</b><div><p>A strategy only changes what is sent to the model. Change the strategy later and the next run can see the old turns again.</p></div></div>
+
+    <div class="next-steps"><b>Next steps</b>
+      <ul>
+        <li><a href="#sessions">Sessions and state</a> — stores and signed history.</li>
+        <li><a href="#security">Security</a> — per-run token limits and budgets.</li>
+        <li><a href="#memory-skills">Memory, skills and plugins</a> — offload large tool results.</li>
+      </ul>
+    </div>
   </section>
 
-  <section id="approvals" class="page">
+
+    <section id="approvals" class="page">
     <h1>Approvals</h1>
-    <p class="lede">Synchronous for a CLI; durable for a server that answers hours later.</p>
-    <h2>In-process</h2>
-    <div class="code" data-title="go"><pre><code class="language-go">a, _ := kritrim.New(kritrim.Config{
+    <p class="lede">This guide takes you to gated tool calls: wrap a tool as risky, approve synchronously in a CLI, then pause and resume hours later from another process. Durable pauses need a session store; the same pattern works in sealed mode.</p>
+
+    <h2>1. Mark the tool and set Approve</h2>
+    <p>Only tools wrapped with <code>kritrim.Risky</code> ask for approval. Your <code>Approve</code> callback runs before the tool body. No extra credentials — this is process-local unless you persist via sessions.</p>
+    <div class="code" data-title="go"><pre><code class="language-go">a, err := kritrim.New(kritrim.Config{
 	Model: model,
 	Tools: []kritrim.Tool{kritrim.Risky(refund)},
 	Approve: func(ctx context.Context, req kritrim.Approval) (kritrim.Decision, error) {
@@ -656,8 +1049,13 @@ if errors.Is(err, kritrim.ErrSessionTampered) {
 		return kritrim.Approve(), nil // or Reject, Edit, Respond
 	},
 })</code></pre></div>
-    <h2>Durable pause</h2>
-    <p>Return <code>Pause()</code>. The run saves the pending step with the session and returns interrupts.</p>
+
+    <div class="what-happened"><b>What just happened</b>
+      <p>When the model called the risky tool, kritrim paused the tool path, invoked your callback, and only then ran the tool (or rejected / edited arguments / responded).</p>
+    </div>
+
+    <h2>2. Pause for a human (durable)</h2>
+    <p>Return <code>Pause()</code>. The run saves the pending step with the session and returns interrupts. Attach <code>Config.Session</code> and pass a <code>Thread</code> so another process can resume later.</p>
     <div class="code" data-title="go"><pre><code class="language-go">Approve: func(ctx context.Context, req kritrim.Approval) (kritrim.Decision, error) {
 	return kritrim.Pause(), nil
 },
@@ -670,33 +1068,70 @@ res, _ = a.Run(ctx, "", kritrim.Thread("ticket-981"),
 	kritrim.Decisions(map[string]kritrim.Decision{
 		res.Interrupts[0].ID: kritrim.Approve(),
 	}))</code></pre></div>
+
+    <h2>3. Know the resume rules</h2>
     <ul>
       <li>The model is not called again on resume; only the remaining tools run.</li>
       <li>A second resume gets <code>ErrSessionConflict</code>, so a tool runs once.</li>
       <li>A paused thread refuses a new prompt until the interrupts are answered.</li>
       <li>This works in sealed mode: pending state crosses the RPC boundary and survives a box restart.</li>
     </ul>
+
+    <div class="next-steps"><b>Next steps</b>
+      <ul>
+        <li><a href="#sessions">Sessions and state</a> — where paused approvals are stored.</li>
+        <li><a href="#authorization">Authorization</a> — who may call which tool before approval.</li>
+        <li><a href="#sealed">The sealed agent</a> — host-side approvals for boxed agents.</li>
+      </ul>
+    </div>
   </section>
 
-  <section id="structured-output" class="page">
+
+    <section id="structured-output" class="page">
     <h1>Structured output</h1>
-    <p class="lede">Ask for a Go type instead of text. One repair round, then <code>ErrOutput</code>.</p>
+    <p class="lede">This guide takes you from free-text answers to a filled Go struct: declare a type with the same tags as tools, pass <code>Output</code> on the run, and handle one repair round or <code>ErrOutput</code>. Uses the same model credentials as your agent.</p>
+
+    <h2>1. Declare the type</h2>
+    <p>Use <code>json</code>, <code>desc</code> and optional fields the same way you would for a tool argument. The schema is derived from those tags.</p>
     <div class="code" data-title="go"><pre><code class="language-go">type Trip struct {
 	City    string   `json:"city"`
 	Packing []string `json:"packing" desc:"things to pack"`
 	Budget  int      `json:"budget_eur,omitempty"`
-}
+}</code></pre></div>
 
-var trip Trip
-_, err := a.Run(ctx, "Plan Lisbon", kritrim.Output(&trip))
-if err != nil { /* kritrim.ErrOutput */ }
+    <h2>2. Ask the run to fill it</h2>
+    <p>Pass a pointer with <code>kritrim.Output</code>. On success the struct is populated; on failure after one repair round you get <code>kritrim.ErrOutput</code>.</p>
+    <div class="code" data-title="go"><pre><code class="language-go">var trip Trip
+_, err := a.Run(ctx, "Plan Lisbon", kritrim.Output(&amp;trip))
+if err != nil {
+	// kritrim.ErrOutput after one repair round
+	log.Fatal(err)
+}
 fmt.Println(trip.City, trip.Packing)</code></pre></div>
-    <p>OpenAI and Gemini use native JSON schema; Anthropic and Bedrock get a forced tool; OpenAI-compatible providers can use JSON mode. The schema is derived from the same tags as a tool.</p>
+
+    <div class="what-happened"><b>What just happened</b>
+      <p>kritrim asked the provider for structured JSON (or a forced tool, depending on the model), decoded into <code>Trip</code>, and repaired once if the first payload failed validation.</p>
+    </div>
+
+    <h2>3. Know how providers map</h2>
+    <p>OpenAI and Gemini use native JSON schema; Anthropic and Bedrock get a forced tool; OpenAI-compatible providers can use JSON mode. Your call site stays the same — only the transport differs.</p>
+
+    <div class="next-steps"><b>Next steps</b>
+      <ul>
+        <li><a href="#tools">Tools</a> — the same schema tags for arguments.</li>
+        <li><a href="#providers">Providers</a> — capability matrix for structured output.</li>
+        <li><a href="#evals">Evals</a> — assert JSON fields in experiments.</li>
+      </ul>
+    </div>
   </section>
 
-  <section id="security" class="page">
+
+    <section id="security" class="page">
     <h1>Security</h1>
-    <p class="lede">Enabling a built-in capability is the grant. There is no second policy file to drift from the code.</p>
+    <p class="lede">This guide takes you through the defaults that already protect every agent, then shows how to set run limits, wire secrets, redact PII and steer with hooks. Enabling a built-in capability is the grant — there is no second policy file to drift from the code.</p>
+
+    <h2>1. Rely on the defaults</h2>
+    <p>You do not turn security on with a flag. Constructing a tool is the permission. Scan these defaults before you add shell, HTTP or files:</p>
     <div class="cards">
       <div class="card"><h3>Default deny</h3><p><code>HTTP</code> and <code>Shell</code> refuse to be constructed without an allowlist. <code>Files</code> is read-only unless <code>Write: true</code>.</p></div>
       <div class="card"><h3>SSRF and rebinding</h3><p>Exact allowlisted hosts may be private; wildcard hosts must be public, checked at dial time on the IP actually connected to, so DNS rebinding cannot reach an internal address. Every redirect is re-validated.</p></div>
@@ -707,58 +1142,95 @@ fmt.Println(trip.City, trip.Packing)</code></pre></div>
       <div class="card"><h3>Guardrails</h3><p>A Bedrock guardrail can screen every call, inside Converse or for any model with <code>guard.Bedrock</code>. A blocked reply ends the run with <code>StopGuardrail</code> and its tool calls never run.</p></div>
       <div class="card"><h3>Audit</h3><p>One hash-chained JSON line per model, tool and approval. With <code>AuditKey</code> the chain is HMAC-signed and a signed head detects truncation.</p></div>
     </div>
-    <h2>Limits</h2>
-    <div class="code" data-title="go"><pre><code class="language-go">a, _ := kritrim.New(kritrim.Config{
+
+    <h2>2. Set limits, audit and secrets</h2>
+    <p>Put secret values in <code>Config.Secrets</code> (or the environment your process already uses). For a signed audit log, load 32+ random bytes from a KMS — not from a file next to the log.</p>
+    <div class="code" data-title="go"><pre><code class="language-go">a, err := kritrim.New(kritrim.Config{
 	Model:  model,
 	Limits: kritrim.Limits{Steps: 20, ToolCalls: 50, Tokens: 200_000},
 	Audit:  kritrim.AuditFile(".agent/audit.jsonl", kritrim.AuditKey(auditKey)),
 	Secrets: map[string]string{"GITHUB_TOKEN": os.Getenv("GITHUB_TOKEN")},
 })</code></pre></div>
-    <p>Defaults: 20 steps, 100 tool calls and <code>kritrim.DefaultTokenLimit</code> (1,000,000) tokens per run. Set <code>Tokens: -1</code> to remove the token cap. The token budget is checked <em>before</em> every model call, including the structured-output repair call: a call whose estimated input does not fit is refused, and the output limit is capped to what remains. In sealed mode the host enforces the run's <code>Limits.Tokens</code> as well as <code>Sealed.MaxTokens</code>.</p>
-    <h2>Redaction and policy</h2>
+    <p>Defaults: 20 steps, 100 tool calls and <code>kritrim.DefaultTokenLimit</code> (1,000,000) tokens per run. Set <code>Tokens: -1</code> to remove the token cap. The token budget is checked <em>before</em> every model call, including the structured-output repair call. In sealed mode the host enforces the run's <code>Limits.Tokens</code> as well as <code>Sealed.MaxTokens</code>.</p>
+
+    <div class="what-happened"><b>What just happened</b>
+      <p>Every model and tool step now counts against your caps, secret references resolve only at use, and each action appends a tamper-evident audit line.</p>
+    </div>
+
+    <h2>3. Add redaction and deny policies</h2>
+    <p>Put guards first in the chain so tracing sees redacted values. <code>kritrim.Chain</code> runs hooks in order; a Before hook that errors or denies stops the chain.</p>
     <div class="code" data-title="go"><pre><code class="language-go">deny, _ := guard.Deny(`(?i)ignore all previous`, "prompt injection")
-a, _ := kritrim.New(kritrim.Config{
+a, err := kritrim.New(kritrim.Config{
 	Model: model,
-	// Guards first, so tracing sees redacted values.
 	Hooks: kritrim.Chain(deny, guard.PII("email", "credit_card"), trace.OTel(otelCfg)),
 })</code></pre></div>
-    <p><code>kritrim.Chain</code> combines any number of hook sets. They run in the order given; a Before hook that errors or denies stops the chain.</p>
-    <h2>Hooks that steer</h2>
-    <p>A hook can ask for another answer, reroute a tool call, or end the run, without forking the loop:</p>
+
+    <h2>4. Steer with hooks</h2>
+    <p>A hook can ask for another answer, reroute a tool call, or end the run without forking the loop:</p>
     <div class="code" data-title="go"><pre><code class="language-go">Hooks: kritrim.Hooks{
 	AfterModel: func(ctx context.Context, e *kritrim.ModelEvent) {
-		if strings.Contains(e.Response.Text, "TODO") { e.Retry = true } // capped by Retry.Max
+		if strings.Contains(e.Response.Text, "TODO") {
+			e.Retry = true // capped by Retry.Max
+		}
 	},
 	BeforeTool: func(ctx context.Context, e *kritrim.ToolEvent) error {
-		if e.Call.Name == "web_search" { e.Swap = "internal_search" }
+		if e.Call.Name == "web_search" {
+			e.Swap = "internal_search"
+		}
 		return nil
 	},
 	AfterTool: func(ctx context.Context, e *kritrim.ToolEvent) {
-		if e.Result.IsError { e.End = "tool failed" } // Result.Stop == StopHook
+		if e.Result.IsError {
+			e.End = "tool failed" // Result.Stop == StopHook
+		}
 	},
 }</code></pre></div>
     <p>A swapped call goes through approval, argument validation and <code>BeforeTool</code> again, so a swap cannot skip a check, and it cannot swap a second time.</p>
     <div class="note warn"><b>Trust boundary</b><div><p>The broker governs built-in tools. Your own Go tools are code you compiled into the binary. Put untrusted work in a sandbox.</p></div></div>
+
+    <div class="next-steps"><b>Next steps</b>
+      <ul>
+        <li><a href="#authorization">Authorization</a> — who may call which tool with which arguments.</li>
+        <li><a href="#sandboxes">Sandboxes</a> — isolate shell and file tools.</li>
+        <li><a href="#sealed">The sealed agent</a> — keep keys on the host.</li>
+        <li><a href="#observability">Observability</a> — verify signed audit logs.</li>
+      </ul>
+    </div>
   </section>
 
-  <section id="authorization" class="page">
+
+    <section id="authorization" class="page">
     <h1>Authorization</h1>
-    <p class="lede"><code>Config.Tools</code> answers "may this agent refund". Policy answers "may <em>this caller</em> refund <em>this much</em>".</p>
+    <p class="lede">This guide takes you to per-caller tool policy: build a Cedar-style policy, attach it as hooks, and pass user and roles on each run. <code>Config.Tools</code> answers "may this agent refund"; policy answers "may <em>this caller</em> refund <em>this much</em>". No separate policy service — rules live in Go next to the agent.</p>
+
+    <h2>1. Build and attach a policy</h2>
+    <p>Import <code>github.com/ganeshdipdumbare/kritrim/authz</code>. Put <code>policy.Hooks()</code> first in <code>kritrim.Chain</code> so a denied call never reaches tracing as if it ran.</p>
     <div class="code" data-title="go"><pre><code class="language-go">import "github.com/ganeshdipdumbare/kritrim/authz"
 
 policy, err := authz.New(
 	authz.Permit("*").For("admin"),
 	authz.Permit("current_time", "web_*"),
 	authz.Permit("refund").For("support").
-		When(func(r authz.Request) bool { return r.Number("amount") <= 100 }).
+		When(func(r authz.Request) bool { return r.Number("amount") &lt;= 100 }).
 		Because("support may refund up to 100 euros; ask a manager for more"),
 	authz.Forbid("shell"),
 )
-if err != nil { log.Fatal(err) }
+if err != nil {
+	log.Fatal(err)
+}
 
-a, _ := kritrim.New(kritrim.Config{Model: model, Tools: tools, Hooks: policy.Hooks()})
+a, err := kritrim.New(kritrim.Config{
+	Model: model,
+	Tools: tools,
+	Hooks: policy.Hooks(),
+})
 a.Run(ctx, "refund order A-17", kritrim.User("u-7"), kritrim.Roles("support"))</code></pre></div>
-    <h2>Three rules</h2>
+
+    <div class="what-happened"><b>What just happened</b>
+      <p>On each tool call the policy saw the run's user and roles plus the model-chosen arguments (after any approval edit). A forbid or missing permit blocked the call and told the model why.</p>
+    </div>
+
+    <h2>2. Learn the three rules</h2>
     <p>The semantics are Cedar's:</p>
     <ol>
       <li>An explicit <code>Forbid</code> beats every <code>Permit</code>.</li>
@@ -766,7 +1238,9 @@ a.Run(ctx, "refund order A-17", kritrim.User("u-7"), kritrim.Roles("support"))</
       <li>With nothing matching, the call is denied.</li>
     </ol>
     <p>Default deny is the point. Adding a tool to an agent does not quietly widen what every caller can reach, and a typo in a policy fails closed.</p>
-    <h2>Building a policy</h2>
+
+    <h2>3. Narrow with builders</h2>
+    <p>Columns: policy piece and what it constrains. Identity comes from <code>kritrim.User</code> / <code>kritrim.Roles</code> (or <code>Config.User</code> / <code>Config.Roles</code>).</p>
     <div class="table"><table>
       <thead><tr><th>Piece</th><th>Narrows the policy to</th></tr></thead>
       <tbody>
@@ -777,17 +1251,29 @@ a.Run(ctx, "refund order A-17", kritrim.User("u-7"), kritrim.Roles("support"))</
         <tr><td><code>.Because(text)</code></td><td>sets what the model is told when this policy denies</td></tr>
       </tbody>
     </table></div>
-    <p>Identity comes from the run, through <code>kritrim.User</code> and <code>kritrim.Roles</code> (or <code>Config.User</code> and <code>Config.Roles</code>), so one agent serves many callers. Conditions see the arguments the model chose, after any approval edited them, which is where ceilings and path prefixes belong. A condition that panics denies the call instead of crashing the run.</p>
-    <h2>A denial is a message, not an error</h2>
-    <p>The run keeps going. The model is told the call was blocked and why, and usually explains the limit to the user. Write <code>Because</code> for the model to read: it is the sentence the user ends up hearing. A call that nothing permitted is told the <code>Because</code> text of every policy covering that tool, so a caller who went over a ceiling learns what the ceiling was.</p>
-    <p>To check a decision outside a run, for a UI that greys out a button, call <code>policy.Check(authz.Request{User: "u-7", Roles: roles, Tool: "refund", Args: args})</code>; it returns nil when allowed and an error wrapping <code>authz.ErrDenied</code> when not.</p>
-    <div class="note"><b>Policy can only narrow</b><div><p>Policy runs after kritrim's own checks. It cannot grant <code>Shell</code> a command its allowlist lacks, and it cannot waive an approval. Put <code>policy.Hooks()</code> first in <code>kritrim.Chain</code> so a denied call never reaches tracing or other hooks as if it ran.</p></div></div>
+    <p>Conditions see arguments after any approval edited them — ceilings and path prefixes belong here. A condition that panics denies the call instead of crashing the run.</p>
+
+    <h2>4. Treat denial as a message</h2>
+    <p>The run keeps going. The model is told the call was blocked and why, and usually explains the limit to the user. Write <code>Because</code> for the model to read. To check a decision outside a run (grey out a button), call <code>policy.Check(authz.Request{...})</code>; it returns nil when allowed and an error wrapping <code>authz.ErrDenied</code> when not.</p>
+    <div class="note"><b>Policy can only narrow</b><div><p>Policy runs after kritrim's own checks. It cannot grant <code>Shell</code> a command its allowlist lacks, and it cannot waive an approval.</p></div></div>
+
+    <div class="next-steps"><b>Next steps</b>
+      <ul>
+        <li><a href="#approvals">Approvals</a> — human gates after policy permits.</li>
+        <li><a href="#security">Security</a> — allowlists and hooks that chain with policy.</li>
+        <li><a href="#tools">Tools</a> — what you put on <code>Config.Tools</code>.</li>
+      </ul>
+    </div>
   </section>
 
-  <section id="sandboxes" class="page">
+
+    <section id="sandboxes" class="page">
     <h1>Sandboxes</h1>
-    <p class="lede">Run shell and file tools in Docker, a cloud sandbox, a Firecracker microVM, on a remote host over SSH, or locally for development.</p>
-    <div class="code" data-title="go"><pre><code class="language-go">a, _ := kritrim.New(kritrim.Config{
+    <p class="lede">This guide takes you to shell and file tools that run off the host: Docker first, then attach/stream, SSH, and cloud or microVM adapters. Docker needs a local daemon; cloud adapters need their own API keys in the environment; Firecracker needs Linux with KVM.</p>
+
+    <h2>1. Point tools at a sandbox</h2>
+    <p>Set <code>Config.Sandbox</code>. Shell and file tools execute inside the machine the sandbox opens. Your model API key stays on the host process.</p>
+    <div class="code" data-title="go"><pre><code class="language-go">a, err := kritrim.New(kritrim.Config{
 	Model: model,
 	Tools: []kritrim.Tool{
 		kritrim.Shell(kritrim.ShellConfig{Allow: []string{"go", "git"}}),
@@ -795,7 +1281,12 @@ a.Run(ctx, "refund order A-17", kritrim.User("u-7"), kritrim.Roles("support"))</
 	},
 	Sandbox: kritrim.Docker(kritrim.DockerConfig{Image: "golang:1.27"}),
 })</code></pre></div>
-    <h2>Hardened containers</h2>
+
+    <div class="what-happened"><b>What just happened</b>
+      <p>When the model called shell or files, kritrim opened a Docker machine, ran the command inside it under the allowlist, and streamed results back to the loop.</p>
+    </div>
+
+    <h2>2. Harden the container</h2>
     <p>Containers kritrim creates drop every Linux capability, set <code>no-new-privileges</code>, have no network, and are capped at 2 GB of memory, 2 CPUs and 512 processes. Tighten or relax per sandbox:</p>
     <div class="code" data-title="go"><pre><code class="language-go">kritrim.Docker(kritrim.DockerConfig{
 	Image:     "golang:1.27",
@@ -807,7 +1298,9 @@ a.Run(ctx, "refund order A-17", kritrim.User("u-7"), kritrim.Roles("support"))</
 	CapAdd:    nil,         // re-add capabilities only if needed
 })</code></pre></div>
     <p>An attached container (<code>Container:</code>) keeps the settings it was started with.</p>
-    <h2>Attach or stream</h2>
+
+    <h2>3. Attach or stream</h2>
+    <p>Reuse an existing workspace, or stream stdout while a command runs (Docker, Local, SSH):</p>
     <div class="code" data-title="go"><pre><code class="language-go">// Attach to a container that already exists; Close does not remove it.
 box := kritrim.Docker(kritrim.DockerConfig{Container: "agent-workspace"})
 
@@ -815,7 +1308,9 @@ box := kritrim.Docker(kritrim.DockerConfig{Container: "agent-workspace"})
 m, _ := box.Open(ctx, kritrim.OpenConfig{})
 sm := m.(kritrim.StreamingMachine)
 sm.ExecStream(ctx, req, func(stdout, stderr string) { fmt.Print(stdout) })</code></pre></div>
-    <h2>SSH</h2>
+
+    <h2>4. Use SSH (optional)</h2>
+    <p>Point at a remote host with an identity file. Host-key checking is enforced by default; extra SSH options are filtered to block directives that run local commands.</p>
     <div class="code" data-title="go"><pre><code class="language-go">import "github.com/ganeshdipdumbare/kritrim/sandbox/ssh"
 
 box, err := ssh.New(ssh.Config{
@@ -823,8 +1318,9 @@ box, err := ssh.New(ssh.Config{
 	WorkingDir:   "/home/ubuntu/workspace",
 	IdentityFile: "~/.ssh/agent_key",
 })</code></pre></div>
-    <p>Host-key checking is enforced by default; extra SSH options are filtered to block directives that run local commands.</p>
-    <h2>Cloud and microVM sandboxes</h2>
+
+    <h2>5. Pick a cloud or microVM adapter</h2>
+    <p>Set the adapter's env var before constructing (columns: adapter package, whether tools and sealed agents work, network default):</p>
     <div class="code" data-title="go"><pre><code class="language-go">box, _ := e2b.New(e2b.Config{})                   // E2B_API_KEY
 box, _ := tensorlake.New(tensorlake.Config{})     // TENSORLAKE_API_KEY
 box, _ := daytona.New(daytona.Config{})           // DAYTONA_API_KEY
@@ -840,18 +1336,31 @@ box, _ := firecracker.New(firecracker.Config{Kernel: "vmlinux", RootFS: "rootfs.
         <tr><td><code>sandbox/daytona</code></td><td>yes</td><td>no (no process stdio)</td><td>blocked by default</td></tr>
       </tbody>
     </table></div>
-    <p>API keys stay on the host. Firecracker needs Linux with KVM and a root filesystem that contains the guest agent (<code>kritrim vmagent build</code>). Each adapter passes <code>sandbox/sandboxtest</code> against a fake of its provider's protocol, and runs it live when credentials are set.</p>
-    <h2>Your own adapter</h2>
+    <p>API keys stay on the host. Firecracker needs a root filesystem that contains the guest agent (<code>kritrim vmagent build</code>). Each adapter passes <code>sandbox/sandboxtest</code> against a fake of its provider's protocol, and runs it live when credentials are set.</p>
+
+    <h2>6. Implement your own adapter (optional)</h2>
     <p>Implement <code>Sandbox</code>, <code>Machine</code> and <code>Process</code> and pass <code>sandbox/sandboxtest</code>. <code>Start</code>'s context bounds starting the process only; the process runs until it exits or is killed. A provider without process stdio returns <code>errors.ErrUnsupported</code> from <code>Start</code> and tests with <code>Options{NoStart: true}</code>.</p>
+
+    <div class="next-steps"><b>Next steps</b>
+      <ul>
+        <li><a href="#sealed">The sealed agent</a> — put the whole agent in the box.</li>
+        <li><a href="#tools">Tools</a> — Python and shell require a sandbox.</li>
+        <li><a href="#security">Security</a> — what the broker still enforces on the host.</li>
+      </ul>
+    </div>
   </section>
 
-  <section id="sealed" class="page">
+
+    <section id="sealed" class="page">
     <h1>The sealed agent</h1>
-    <p class="lede">The whole agent runs inside the sandbox. The host only brokers. No API key, secret value or host file enters the box.</p>
+    <p class="lede">This guide takes you to an agent that runs entirely inside a sandbox: build a Linux box binary, configure <code>Sealed</code>, and let the host broker model calls, secrets, egress, approvals and audit. Provider API keys and secret values never enter the box — only the host process holds them.</p>
+
+    <h2>1. Configure sealed mode</h2>
+    <p>Same binary, two modes: inside the box it serves RPC; on the host <code>New</code> starts the sandbox. Set <code>ANTHROPIC_API_KEY</code> (or your provider's key) on the <em>host</em> only. Build <code>Binary</code> for Linux.</p>
     <div class="code" data-title="go"><pre><code class="language-go">cfg := kritrim.Config{
 	Model: kritrim.Anthropic("claude-sonnet-5-5"),
 	Tools: []kritrim.Tool{kritrim.Shell(kritrim.ShellConfig{Allow: []string{"ls"}})},
-	Sealed: &kritrim.Sealed{
+	Sealed: &amp;kritrim.Sealed{
 		Sandbox:   kritrim.Docker(kritrim.DockerConfig{Image: "debian:bookworm-slim"}),
 		Binary:    "./box", // GOOS=linux build
 		Egress:    []string{"api.github.com"},
@@ -865,10 +1374,18 @@ if kritrim.InBox() {
 	log.Fatal(kritrim.ServeBox(ctx, os.Stdin, os.Stdout, cfg))
 }
 a, err := kritrim.New(cfg)</code></pre></div>
-    <h2>Build the box</h2>
+
+    <div class="what-happened"><b>What just happened</b>
+      <p>On the host, <code>New</code> opened the sandbox, started your Linux binary, and began brokering. Inside the box, <code>ServeBox</code> runs the agent loop with no API keys — every outbound call goes through the host.</p>
+    </div>
+
+    <h2>2. Build the box binary</h2>
+    <p>Cross-compile for the sandbox OS/arch (Docker images are usually linux/amd64):</p>
     <div class="code" data-title="terminal"><pre><code class="language-bash">go run ./cmd/kritrim box build -o box .
 # or: GOOS=linux GOARCH=amd64 go build -o box .</code></pre></div>
-    <h2>What crosses the boundary</h2>
+
+    <h2>3. Know what crosses the boundary</h2>
+    <p>Columns: what the box requests, and what the host does in response.</p>
     <div class="table"><table>
       <thead><tr><th>The box needs</th><th>The host does</th></tr></thead>
       <tbody>
@@ -882,41 +1399,83 @@ a, err := kritrim.New(cfg)</code></pre></div>
     </table></div>
     <p>The box is treated as untrusted. User, roles, thread and run id come from the run the host started, never from the box. Every host capability call holds a lease on that run: when the run ends, in-flight calls are canceled and waited for, and new ones are refused.</p>
     <div class="note"><b>Local is not isolation</b><div><p><code>kritrim.Local()</code> exists for development and requires <code>AllowUnsafeLocal: true</code>. Use Docker or a cloud sandbox for a real boundary.</p></div></div>
+
+    <div class="next-steps"><b>Next steps</b>
+      <ul>
+        <li><a href="#sandboxes">Sandboxes</a> — Docker, cloud and Firecracker adapters.</li>
+        <li><a href="#approvals">Approvals</a> — host-side durable pauses.</li>
+        <li><a href="#security">Security</a> — secrets, SSRF and audit on the host.</li>
+      </ul>
+    </div>
   </section>
 
-  <section id="mcp" class="page">
+
+    <section id="mcp" class="page">
     <h1>MCP</h1>
-    <p class="lede">Connect stdio and Streamable HTTP servers. Tools are namespaced and go through the same broker and approval rules.</p>
-    <div class="code" data-title="go"><pre><code class="language-go">a, _ := kritrim.New(kritrim.Config{
+    <p class="lede">This guide takes you to Model Context Protocol tools on an agent: connect a stdio server, optionally a Streamable HTTP server, and use namespaced tools under the same broker and approval rules as built-ins. Stdio servers get only the env you pass; HTTP headers can reference <code>secret://</code> values from <code>Config.Secrets</code>.</p>
+
+    <h2>1. Register MCP servers</h2>
+    <p>Add entries under <code>Config.MCP</code>. For HTTP, put tokens in secrets rather than hard-coding them. Stdio commands (like <code>npx</code>) must be available on the host PATH.</p>
+    <div class="code" data-title="go"><pre><code class="language-go">a, err := kritrim.New(kritrim.Config{
 	Model: model,
+	Secrets: map[string]string{
+		"MCP_TOKEN": os.Getenv("MCP_TOKEN"),
+	},
 	MCP: []kritrim.MCPConfig{
 		{Name: "github", Command: "npx", Args: []string{"-y", "@modelcontextprotocol/server-github"}},
 		{Name: "docs", URL: "https://mcp.example.com/mcp",
 			Headers: map[string]string{"Authorization": "Bearer secret://MCP_TOKEN"}},
 	},
 })</code></pre></div>
+
+    <div class="what-happened"><b>What just happened</b>
+      <p>At <code>New</code>, kritrim connected to each server, listed tools, and registered them as <code>server__tool</code> names. Calls go through schema validation, policy, approvals and the broker like any other tool.</p>
+    </div>
+
+    <h2>2. Know the rules</h2>
     <ul>
       <li>Tools are named <code>server__tool</code>.</li>
       <li>Each server has a timeout, an HTTP host allowlist and an optional <code>Risky</code> flag.</li>
       <li>stdio servers do not inherit your environment; pass what they need in <code>Env</code>. HTTP servers never get a redirect off their host.</li>
       <li>In sealed mode the host connects and bridges the tools into the box automatically.</li>
     </ul>
+
+    <div class="next-steps"><b>Next steps</b>
+      <ul>
+        <li><a href="#tools">Tools</a> — typed tools alongside MCP.</li>
+        <li><a href="#approvals">Approvals</a> — mark an MCP server <code>Risky</code>.</li>
+        <li><a href="#sealed">The sealed agent</a> — host-bridged MCP.</li>
+        <li><a href="#security">Security</a> — secrets and minimal env for stdio.</li>
+      </ul>
+    </div>
   </section>
 
-  <section id="a2a" class="page">
+
+    <section id="a2a" class="page">
     <h1>A2A</h1>
-    <p class="lede">Serve an agent over the Agent-to-Agent protocol and call remote agents with the same result type.</p>
-    <h2>Server</h2>
-    <div class="code" data-title="go"><pre><code class="language-go">srv, _ := a2a.NewServer(a2a.ServerConfig{
+    <p class="lede">This guide takes you to Agent-to-Agent: serve one agent over A2A with bearer (or OAuth) auth, call a remote agent with the same <code>Result</code> type, and optionally use it as a tool or graph node. Set <code>A2A_TOKEN</code> (or your OAuth client credentials) before starting the server or client.</p>
+
+    <h2>1. Serve an agent</h2>
+    <p>Build a server with an agent card, auth, a per-context agent factory and a task store. Keep the bearer token in the environment — an empty token is refused.</p>
+    <div class="code" data-title="go"><pre><code class="language-go">srv, err := a2a.NewServer(a2a.ServerConfig{
 	Card:  a2a.Card{Name: "Triage", Description: "Routes support tickets"},
 	Auth:  a2a.Bearer(os.Getenv("A2A_TOKEN")),
 	Agent: func(contextID string) (*kritrim.Agent, error) { return buildAgent(contextID), nil },
 	Tasks: a2a.MemoryTasks(), // or a2a.SQLTasks(db, cfg)
 	PushAllowPrivate: false,
 })
+if err != nil {
+	log.Fatal(err)
+}
 http.ListenAndServe(":9000", srv)</code></pre></div>
-    <h2>Client</h2>
-    <div class="code" data-title="go"><pre><code class="language-go">c, _ := a2a.NewClient(a2a.ClientConfig{
+
+    <div class="what-happened"><b>What just happened</b>
+      <p>Callers hit the A2A endpoints with the bearer token. Each context gets an agent from your factory; tasks and push configs stay isolated per principal when you use token maps.</p>
+    </div>
+
+    <h2>2. Call a remote agent</h2>
+    <p>Point the client at the endpoint. Prefer <code>secret://</code> in headers so the token stays in <code>Config.Secrets</code> on the calling side. OAuth client credentials are optional.</p>
+    <div class="code" data-title="go"><pre><code class="language-go">c, err := a2a.NewClient(a2a.ClientConfig{
 	Endpoint: "https://triage.internal",
 	Headers:  map[string]string{"Authorization": "Bearer secret://A2A_TOKEN"},
 	// OAuth client credentials:
@@ -932,7 +1491,8 @@ res, _ = c.Run(ctx, "summarize", a2a.Files(a2a.File{Name: "notes.md", MimeType: 
 
 // A remote agent as a graph node.
 g, _ := multiagent.Sequence(multiagent.Step{Name: "triage", Node: c.Node()})</code></pre></div>
-    <h2>What is implemented</h2>
+
+    <h2>3. What is implemented</h2>
     <ul>
       <li>Agent card, <code>message/send</code>, <code>message/stream</code>, <code>tasks/get</code>, <code>tasks/cancel</code>.</li>
       <li>Per-context agents with an LRU, text, data and file parts, and interrupt → <code>input-required</code> → resume.</li>
@@ -942,42 +1502,62 @@ g, _ := multiagent.Sequence(multiagent.Step{Name: "triage", Node: c.Node()})</co
       <li>Per-caller isolation: with <code>a2a.Tokens(map[token]principal)</code> (or any <code>Auth</code> that implements <code>Principal</code>), each task, context, conversation and push config belongs to the caller that created it. Other callers get "task not found". With a single <code>Bearer</code> token, all callers share one principal.</li>
       <li>The client only follows redirects on the same allowed host, so its credentials stay where you sent them.</li>
     </ul>
+
+    <div class="next-steps"><b>Next steps</b>
+      <ul>
+        <li><a href="#multiagent">Multi-agent</a> — graphs and swarms with A2A nodes.</li>
+        <li><a href="#approvals">Approvals</a> — interrupts map to <code>input-required</code>.</li>
+        <li><a href="#security">Security</a> — secrets and dial-time host checks.</li>
+      </ul>
+    </div>
   </section>
 
-  <section id="multiagent" class="page">
+
+    <section id="multiagent" class="page">
     <h1>Multi-agent</h1>
-    <p class="lede">Start with an agent as a tool; reach for a graph or swarm when the path matters.</p>
-    <h2>Agents as tools</h2>
-    <div class="code" data-title="go"><pre><code class="language-go">expert, _ := kritrim.New(kritrim.Config{Model: model, Instructions: "You are a Lisbon expert."})
-main, _ := kritrim.New(kritrim.Config{
+    <p class="lede">This guide takes you from one agent as a tool, to a graph or swarm when the path matters, then back to a single tool for a parent agent. Each child agent uses its own model credentials the same way a solo agent does.</p>
+
+    <h2>1. Expose an agent as a tool</h2>
+    <p>Start here when the parent only needs a specialist. The parent's model sends a sentence and gets an answer — it never sees the child's loop.</p>
+    <div class="code" data-title="go"><pre><code class="language-go">expert, err := kritrim.New(kritrim.Config{Model: model, Instructions: "You are a Lisbon expert."})
+main, err := kritrim.New(kritrim.Config{
 	Model: model,
 	Tools: []kritrim.Tool{expert.AsTool("lisbon_expert", "Answers Lisbon questions")},
 })</code></pre></div>
-    <h2>Graph</h2>
+
+    <div class="what-happened"><b>What just happened</b>
+      <p>When the main agent called <code>lisbon_expert</code>, kritrim ran the expert agent to completion and returned its text as the tool result.</p>
+    </div>
+
+    <h2>2. Build a graph</h2>
+    <p>Use a graph when routing or multi-step control flow belongs in code, not in a tool description:</p>
     <div class="code" data-title="go"><pre><code class="language-go">g := multiagent.NewGraph().Start("triage").
 	Node("triage", triageNode).
 	Node("billing", billingNode).
 	Edge("triage", "billing", func(s *multiagent.State) bool { return s.Get("intent") == "billing" })
 
 res, _ := g.Run(ctx, "invoice question")</code></pre></div>
-    <h2>Swarm</h2>
-    <div class="code" data-title="go"><pre><code class="language-go">s, _ := multiagent.NewSwarm(
+
+    <h2>3. Run a swarm</h2>
+    <p>Members get <code>handoff_to_&lt;name&gt;</code> tools and pass work to each other:</p>
+    <div class="code" data-title="go"><pre><code class="language-go">s, err := multiagent.NewSwarm(
 	multiagent.Member{Name: "researcher", Description: "finds facts", Agent: researcher},
 	multiagent.Member{Name: "writer", Description: "writes", Agent: writer},
 )
 res, _ := s.Run(ctx, "draft the launch post")</code></pre></div>
-    <p>Members get <code>handoff_to_&lt;name&gt;</code> tools.</p>
-    <h2>Graphs and swarms as tools</h2>
-    <p>A whole composition can be one tool for another agent, the way <code>Agent.AsTool</code> hands over one agent. The caller's model sends a sentence and gets an answer back; it never sees the nodes or the handoffs.</p>
-    <div class="code" data-title="go"><pre><code class="language-go">front, _ := kritrim.New(kritrim.Config{
+
+    <h2>4. Hand a composition to another agent</h2>
+    <p>A whole graph or swarm can be one tool for another agent, the way <code>Agent.AsTool</code> hands over one agent. The caller's model never sees the nodes or the handoffs.</p>
+    <div class="code" data-title="go"><pre><code class="language-go">front, err := kritrim.New(kritrim.Config{
 	Model: model,
 	Tools: []kritrim.Tool{
 		g.AsTool("support_desk", "Routes and answers a support ticket"),
 		s.AsTool("content_team", "Researches and drafts a post"),
 	},
 })</code></pre></div>
-    <h2>Presets</h2>
-    <p>Two shapes come up often enough to have a constructor. Both build an ordinary graph you can extend, cap or hand over with <code>AsTool</code>.</p>
+
+    <h2>5. Use Sequence and Router presets</h2>
+    <p>Both build an ordinary graph you can extend, cap or hand over with <code>AsTool</code>. A router whose classifier names an unknown route fails the run instead of guessing.</p>
     <div class="code" data-title="go"><pre><code class="language-go">pipeline, _ := multiagent.Sequence(
 	multiagent.Step{Name: "draft", Node: multiagent.AgentNode(writer)},
 	multiagent.Step{Name: "review", Node: multiagent.AgentNode(reviewer)},
@@ -986,20 +1566,42 @@ router, _ := multiagent.Router(classify, map[string]multiagent.Node{
 	"billing": multiagent.AgentNode(billing),
 	"tech":    remote.Node(), // an A2A agent
 })</code></pre></div>
-    <p>A router whose classifier names an unknown route fails the run instead of guessing. Anything else is plain Go; there is no extra workflow primitive.</p>
+    <p>Anything else is plain Go; there is no extra workflow primitive.</p>
+
+    <div class="next-steps"><b>Next steps</b>
+      <ul>
+        <li><a href="#a2a">A2A</a> — remote agents as nodes and tools.</li>
+        <li><a href="#tools">Tools</a> — the parent agent's tool surface.</li>
+        <li><a href="#memory-skills">Memory, skills and plugins</a> — goal loops for long jobs.</li>
+      </ul>
+    </div>
   </section>
 
-  <section id="triggers" class="page">
+
+    <section id="triggers" class="page">
     <h1>Triggers</h1>
-    <p class="lede">Run an agent on a schedule or from a signed webhook.</p>
-    <div class="code" data-title="go"><pre><code class="language-go">sched, _ := trigger.NewScheduler(agent,
+    <p class="lede">This guide takes you to agents that wake on a schedule or a signed webhook: start a scheduler with cron or interval jobs, then verify HMAC deliveries with replay protection. Put the webhook secret in <code>secret://</code> / env — never in source control.</p>
+
+    <h2>1. Schedule runs</h2>
+    <p>Pass an agent and one or more schedules. Use a shared store when several instances share the workload so each tick runs once. Errors are logged, not returned.</p>
+    <div class="code" data-title="go"><pre><code class="language-go">sched, err := trigger.NewScheduler(agent,
 	trigger.Schedule{Name: "digest", Cron: "0 9 * * mon-fri", Location: berlin, Thread: "daily", Prompt: "summarize yesterday"},
 	trigger.Schedule{Name: "poll", Every: 10 * time.Minute, Thread: "poll", Prompt: "check the queue"})
+if err != nil {
+	log.Fatal(err)
+}
 sched.SetStore(store) // shared by every instance: each tick runs once
 sched.Start(ctx)
-defer sched.Close()
+defer sched.Close()</code></pre></div>
+    <p>Schedules take a five-field cron expression or a descriptor such as <code>@daily</code>, read in <code>Location</code>, or an <code>Every</code> interval aligned to the epoch so instances agree on when a tick is due. Names (default: the thread) must be unique. A schedule skips a tick when its previous run is still going.</p>
 
-hook, _ := trigger.Webhook(trigger.WebhookConfig{
+    <div class="what-happened"><b>What just happened</b>
+      <p>The scheduler started background ticks. At each due time it runs the agent with the schedule's prompt and thread, using the store to claim the tick across instances.</p>
+    </div>
+
+    <h2>2. Accept a signed webhook</h2>
+    <p>Resolve the shared secret from env or <code>secret://HOOK_SECRET</code>. The handler verifies HMAC-SHA256 over a versioned, length-prefixed encoding of the timestamp, idempotency key and body.</p>
+    <div class="code" data-title="go"><pre><code class="language-go">hook, err := trigger.Webhook(trigger.WebhookConfig{
 	Agent:  agent,
 	Secret: "secret://HOOK_SECRET",
 })
@@ -1010,14 +1612,27 @@ ts := time.Now()
 req.Header.Set(trigger.TimestampHeader, strconv.FormatInt(ts.Unix(), 10))
 req.Header.Set(trigger.IdempotencyHeader, "evt-123")
 req.Header.Set(trigger.SignatureHeader, trigger.Sign(secret, ts, "evt-123", body))</code></pre></div>
-    <p>The HMAC-SHA256 signature covers a versioned, length-prefixed encoding of the timestamp, the idempotency key and the body. Requests outside <code>Tolerance</code> (default 5 minutes) are refused, so a captured request cannot be replayed later or under a new key. Each delivery runs once: duplicates, including concurrent ones, get the first result, and a delivery without a key is identified by its signature. Reusing a key for a different body returns 409. Deliveries are remembered for <code>DedupeTTL</code> in a <code>DedupeStore</code>: <code>trigger.MemoryDedupe(n)</code> for one process (when full of unexpired deliveries it answers 503 with <code>Retry-After</code> rather than forgetting any), or <code>trigger.SQLDedupe(db, cfg)</code> on Postgres, SQLite or MySQL when several instances serve the webhook. Errors are logged, not returned.</p>
-    <p>Schedules take a five-field cron expression or a descriptor such as <code>@daily</code>, read in <code>Location</code>, or an <code>Every</code> interval aligned to the epoch so instances agree on when a tick is due. Names (default: the thread) must be unique. A schedule skips a tick when its previous run is still going.</p>
+
+    <h2>3. Rely on replay and dedupe rules</h2>
+    <p>Requests outside <code>Tolerance</code> (default 5 minutes) are refused. Each delivery runs once: duplicates, including concurrent ones, get the first result; a delivery without a key is identified by its signature. Reusing a key for a different body returns 409. Deliveries are remembered for <code>DedupeTTL</code> in a <code>DedupeStore</code>: <code>trigger.MemoryDedupe(n)</code> for one process (when full of unexpired deliveries it answers 503 with <code>Retry-After</code> rather than forgetting any), or <code>trigger.SQLDedupe(db, cfg)</code> on Postgres, SQLite or MySQL when several instances serve the webhook.</p>
+
+    <div class="next-steps"><b>Next steps</b>
+      <ul>
+        <li><a href="#sessions">Sessions and state</a> — threads schedules continue.</li>
+        <li><a href="#security">Security</a> — secrets for webhook HMAC.</li>
+        <li><a href="#evals">Evals</a> — test the agent the trigger will run.</li>
+      </ul>
+    </div>
   </section>
 
-  <section id="evals" class="page">
+
+    <section id="evals" class="page">
     <h1>Evals</h1>
-    <p class="lede">Cases, evaluators, detectors, a cache and a report you can gate CI on.</p>
-    <div class="code" data-title="go"><pre><code class="language-go">report, _ := evals.Experiment{
+    <p class="lede">This guide takes you to a gated eval suite: define cases and evaluators, run an experiment, optionally use the CLI, then add built-in judge criteria and chaos. Judge models need their own API keys; offline cases can use the mock model.</p>
+
+    <h2>1. Run an experiment</h2>
+    <p>An experiment is cases, evaluators, optional detectors/cache, and a function that runs one case. Point <code>Cache</code> at a directory to skip identical work across CI runs.</p>
+    <div class="code" data-title="go"><pre><code class="language-go">report, err := evals.Experiment{
 	Cases: []evals.Case{
 		{Name: "capital", Input: "Capital of France?", Expected: "Paris"},
 	},
@@ -1033,6 +1648,13 @@ req.Header.Set(trigger.SignatureHeader, trigger.Sign(secret, ts, "evt-123", body
 	return agent.Run(ctx, c.Input, kritrim.Thread(c.Name))
 })
 fmt.Print(report.Summary())</code></pre></div>
+
+    <div class="what-happened"><b>What just happened</b>
+      <p>Each case ran your agent, then every evaluator scored the result. Detectors flagged empty output, pending approvals and similar failures. The summary is what you print or fail CI on.</p>
+    </div>
+
+    <h2>2. Know the building blocks</h2>
+    <p>Columns: piece of the evals package and what it contributes.</p>
     <div class="table"><table>
       <thead><tr><th>Piece</th><th>What it does</th></tr></thead>
       <tbody>
@@ -1044,16 +1666,18 @@ fmt.Print(report.Summary())</code></pre></div>
         <tr><td>Simulation</td><td><code>GenerateCases</code>, <code>Simulate</code> a model-played user, <code>SimulatedTools</code></td></tr>
       </tbody>
     </table></div>
-    <h2>The CLI</h2>
-    <p><code>kritrim-evals</code> runs a suite without Go glue code. <code>run</code> starts your agent program once per case with the input on stdin; the program prints the answer, or a <code>kritrim.Result</code> as JSON to keep tool calls for trajectory checks.</p>
-    <div class="code" data-title="terminal"><pre><code class="language-bash">kritrim-evals generate -model anthropic:claude-sonnet-5-5 -context agent.md -n 10 > cases.jsonl
+
+    <h2>3. Use the CLI</h2>
+    <p><code>kritrim-evals</code> runs a suite without Go glue. Install from the <a href="https://github.com/ganeshdipdumbare/kritrim/releases">releases page</a> (or build from the repo). <code>run</code> starts your agent program once per case with the input on stdin; the program prints the answer, or a <code>kritrim.Result</code> as JSON to keep tool calls for trajectory checks. Every command exits 1 when a case fails.</p>
+    <div class="code" data-title="terminal"><pre><code class="language-bash">kritrim-evals generate -model anthropic:claude-sonnet-5-5 -context agent.md -n 10 &gt; cases.jsonl
 kritrim-evals run -cases cases.jsonl -contains -detect -o report.json -- go run ./myagent
 kritrim-evals traces -judge faithful,achieved -judge-model openai:gpt-4.1 trace.jsonl
 kritrim-evals report report.json
 kritrim-evals diagnose report.json</code></pre></div>
-    <p>Every command exits 1 when a case fails, so it gates CI as it is. <code>traces</code> scores production traffic recorded with <code>trace.JSON(w, trace.Content())</code>.</p>
-    <h2>Built-in criteria</h2>
-    <p>Writing a good rubric is most of the work of an LLM judge. <code>evals.Judge</code> takes one of twelve ready-made ones:</p>
+    <p><code>traces</code> scores production traffic recorded with <code>trace.JSON(w, trace.Content())</code>. Set provider keys for any <code>-model</code> / <code>-judge-model</code> flags.</p>
+
+    <h2>4. Use built-in judge criteria</h2>
+    <p>Writing a good rubric is most of the work of an LLM judge. <code>evals.Judge</code> takes one of twelve ready-made ones. 1.0 is always good, including for safety criteria. Groups and criteria:</p>
     <div class="code" data-title="go"><pre><code class="language-go">Evaluators: []evals.Evaluator{
 	evals.Judge(evals.Faithful, judge), // every claim backed by a tool result
 	evals.Judge(evals.Achieved, judge), // the task was done, not just described
@@ -1067,17 +1691,17 @@ kritrim-evals diagnose report.json</code></pre></div>
         <tr><td>Behaviour</td><td><code>Obedient</code>, <code>Achieved</code>, <code>Recovered</code></td></tr>
       </tbody>
     </table></div>
-    <p>1.0 is always good, including for the safety criteria, so a report never needs a "lower is better" footnote. Each criterion is an exported rubric string: read it to see exactly what is being asked, or copy it into <code>JudgeConfig.Rubric</code> and adapt it. Judges see the trajectory, not only the final answer, so <code>Faithful</code> can check claims against what the tools actually returned.</p>
-    <p>A trajectory check confirms a tool was called; <code>ToolParameters</code> checks how:</p>
+    <p>Each criterion is an exported rubric string: read it, or copy it into <code>JudgeConfig.Rubric</code> and adapt. Judges see the trajectory, not only the final answer. A trajectory check confirms a tool was called; <code>ToolParameters</code> checks how:</p>
     <div class="code" data-title="go"><pre><code class="language-go">evals.ToolParameters("refund", func(args map[string]any) error {
-	if args["amount"].(float64) > 100 {
+	if args["amount"].(float64) &gt; 100 {
 		return errors.New("refund over the ceiling")
 	}
 	return nil
 })</code></pre></div>
-    <h2>Chaos testing</h2>
-    <p>A suite run on a good day only proves the agent works on a good day. <code>Chaos</code> makes tools fail on purpose, so you see what the agent does when the world does not cooperate: report success anyway, retry the same call until the step limit, or find another way.</p>
-    <div class="code" data-title="go"><pre><code class="language-go">a, _ := kritrim.New(kritrim.Config{
+
+    <h2>5. Chaos-test recovery</h2>
+    <p>A suite on a good day only proves the agent works on a good day. <code>Chaos</code> fails tools on purpose so you see report-success, retry-until-limit, or find-another-way. Failures are counted, not random — the same case fails the same call every time.</p>
+    <div class="code" data-title="go"><pre><code class="language-go">a, err := kritrim.New(kritrim.Config{
 	Model: model,
 	Tools: tools,
 	Hooks: evals.Chaos(evals.ChaosConfig{
@@ -1089,40 +1713,61 @@ report, _ := evals.Experiment{
 	Cases:      cases,
 	Evaluators: []evals.Evaluator{evals.Resilient(), evals.Judge(evals.Recovered, judge)},
 }.Run(ctx, run)</code></pre></div>
-    <p>The failures are counted, not random: the same case fails the same call every time, so a red result is reproducible and a fix is provable. <code>Resilient</code> is the deterministic half (the run finished despite a failure); <code>Judge(Recovered, …)</code> asks whether what the agent did instead made sense. A run where nothing failed passes <code>Resilient</code> with a reason saying so; check <code>FailedTools(result)</code> when you need proof the failure actually happened. <code>Latency</code> delays every tool call, to find runs that only work because a tool was fast. Counting is per run id, so give concurrent runs a <code>kritrim.RunID</code> or a thread.</p>
+    <p><code>Resilient</code> is the deterministic half (the run finished despite a failure); <code>Judge(Recovered, …)</code> asks whether what the agent did instead made sense. Check <code>FailedTools(result)</code> when you need proof the failure happened. Give concurrent runs a <code>kritrim.RunID</code> or a thread so counting stays per run.</p>
+
+    <div class="next-steps"><b>Next steps</b>
+      <ul>
+        <li><a href="#observability">Observability</a> — record traces for <code>kritrim-evals traces</code>.</li>
+        <li><a href="#security">Security</a> — red-team cases and approvals.</li>
+        <li><a href="#quickstart">Quickstart</a> — the agent under test.</li>
+      </ul>
+    </div>
   </section>
 
-  <section id="memory-skills" class="page">
+
+    <section id="memory-skills" class="page">
     <h1>Memory, skills and plugins</h1>
-    <h2>Memory</h2>
-    <div class="code" data-title="go"><pre><code class="language-go">store, _ := memory.NewFile(".agent/memory")
-a, _ := kritrim.New(kritrim.Config{
+    <p class="lede">This guide takes you through long-lived knowledge and control loops: file memory (optional semantic search), progressive skills, offload/inject plugins, and a goal loop that checks the world. Semantic memory needs an embedder API key; lexical memory and skills need none.</p>
+
+    <h2>1. Add memory tools</h2>
+    <p>Create a store, expose <code>remember</code> / <code>recall</code> tools, and optionally inject top hits into the system prompt:</p>
+    <div class="code" data-title="go"><pre><code class="language-go">store, err := memory.NewFile(".agent/memory")
+a, err := kritrim.New(kritrim.Config{
 	Model: model,
 	Tools: memory.Tools(store),                 // remember, recall
 	Hooks: memory.Inject(store, 5),             // recall into the system prompt
 })</code></pre></div>
-    <p>Recall is lexical by default. <code>memory.NewSemantic</code> adds embedding search to any store, ranking by meaning blended with the keyword score:</p>
-    <div class="code" data-title="go"><pre><code class="language-go">store, _ := memory.NewSemantic(base, memory.OpenAIEmbedder("text-embedding-3-small"),
+
+    <div class="what-happened"><b>What just happened</b>
+      <p>The agent can store facts and retrieve them later. <code>Inject</code> pulls the top matches into the system prompt each run so the model sees them without an explicit recall call.</p>
+    </div>
+
+    <h2>2. Turn on semantic search (optional)</h2>
+    <p>Recall is lexical by default. <code>memory.NewSemantic</code> adds embedding search, ranking by meaning blended with the keyword score. Set the embedder's key (<code>OPENAI_API_KEY</code>, Ollama local, Gemini, or Bedrock AWS credentials).</p>
+    <div class="code" data-title="go"><pre><code class="language-go">store, err := memory.NewSemantic(base, memory.OpenAIEmbedder("text-embedding-3-small"),
 	memory.SemanticConfig{Dir: ".agent/memory"}) // vectors survive a restart</code></pre></div>
     <p>Embedders: <code>OpenAIEmbedder</code> (and any compatible API), <code>OllamaEmbedder</code>, <code>GeminiEmbedder</code>, <code>BedrockEmbedder</code>. No vector database; what you remember is sent to the embedding provider.</p>
-    <h2>Skills</h2>
-    <div class="code" data-title="go"><pre><code class="language-go">sk, _ := skills.Load("./skills")
-a, _ := kritrim.New(kritrim.Config{
+
+    <h2>3. Load skills</h2>
+    <p>Each <code>SKILL.md</code> under a directory keeps its body out of the prompt until the model calls <code>use_skill</code>:</p>
+    <div class="code" data-title="go"><pre><code class="language-go">sk, err := skills.Load("./skills")
+a, err := kritrim.New(kritrim.Config{
 	Model:        model,
 	Instructions: "You are a support agent.\n\n" + skills.Prompt(sk),
 	Tools:        append(skills.Tools(sk), kritrim.Time()),
 })</code></pre></div>
-    <p>Each <code>SKILL.md</code> keeps its body out of the prompt until the model calls <code>use_skill</code>.</p>
-    <h2>Plugins</h2>
+
+    <h2>4. Use plugins (offload, inject, steer)</h2>
+    <p>Offload large tool results to disk and give the model a reader tool. <code>plugin.Inject</code> adds context; <code>plugin.Steer</code> adds a just-in-time user message.</p>
     <div class="code" data-title="go"><pre><code class="language-go">hooks, readOffloaded := plugin.Offload(".agent/offload", 16_000)
-a, _ := kritrim.New(kritrim.Config{
+a, err := kritrim.New(kritrim.Config{
 	Model: model,
 	Hooks: hooks,
 	Tools: []kritrim.Tool{readOffloaded},
-})
-// plugin.Inject adds context; plugin.Steer adds a just-in-time user message.</code></pre></div>
-    <h3>Goal loop</h3>
-    <p>One <code>Run</code> ends when the model stops calling tools. That is the model's judgement that it is finished, not a fact. <code>plugin.GoalLoop</code> closes the gap by re-prompting the same thread until a check you write says the job is done.</p>
+})</code></pre></div>
+
+    <h2>5. Close the loop with GoalLoop</h2>
+    <p>One <code>Run</code> ends when the model stops calling tools — the model's judgement, not a fact. <code>plugin.GoalLoop</code> re-prompts the same thread until a check you write says the job is done. Thread is required so attempts share one conversation.</p>
     <div class="code" data-title="go"><pre><code class="language-go">res, err := plugin.GoalLoop(ctx, agent, plugin.GoalConfig{
 	Goal:   "go build ./... exits zero",
 	Thread: "fix-build",
@@ -1137,33 +1782,54 @@ if errors.Is(err, plugin.ErrGoalNotMet) {
     <ul>
       <li><b>Check the world, not the transcript.</b> A model that says the tests pass has only said so. Run the tests in <code>Done</code>.</li>
       <li><b>Write the goal as a test.</b> "every file under ./api compiles" is checkable; "fix the API" is not. Every retry prompt restates it.</li>
-      <li><b>Thread is required.</b> Attempts share one conversation, so the agent remembers what it already tried instead of repeating its first move.</li>
-      <li><b>Approvals stop the loop.</b> A run that pauses for an approval comes back as it is. Resume with <code>kritrim.Decisions</code>, then call <code>GoalLoop</code> again.</li>
+      <li><b>Approvals stop the loop.</b> Resume with <code>kritrim.Decisions</code>, then call <code>GoalLoop</code> again.</li>
     </ul>
     <p><code>Nudge</code> customises the retry prompt. <code>plugin.Goal(goal)</code> keeps the goal in the system prompt when you drive the loop yourself.</p>
+
+    <div class="next-steps"><b>Next steps</b>
+      <ul>
+        <li><a href="#sessions">Sessions and state</a> — threads goal loops continue.</li>
+        <li><a href="#context">Context management</a> — budgets when memory grows.</li>
+        <li><a href="#approvals">Approvals</a> — pausing inside a goal loop.</li>
+      </ul>
+    </div>
   </section>
 
-  <section id="observability" class="page">
+
+    <section id="observability" class="page">
     <h1>Observability</h1>
-    <p class="lede">Audit is built in. Traces, metrics and logs are one hook away.</p>
-    <h2>Audit</h2>
-    <div class="code" data-title="go"><pre><code class="language-go">a, _ := kritrim.New(kritrim.Config{
+    <p class="lede">This guide takes you to signed audit logs and OTel signals: enable a hash-chained audit file, verify it, then attach tracing hooks. Keep the audit HMAC key (32+ random bytes) in a KMS — not on the same host as the log file.</p>
+
+    <h2>1. Turn on audit</h2>
+    <p>Pass an audit sink on the agent. With <code>AuditKey</code> every entry is chained with HMAC-SHA256 and <code>audit.jsonl.head</code> holds a signed record of the last entry.</p>
+    <div class="code" data-title="go"><pre><code class="language-go">a, err := kritrim.New(kritrim.Config{
 	Model: model,
 	Audit: kritrim.AuditFile(".agent/audit.jsonl", kritrim.AuditKey(key)),
 })
 // later
-if err := kritrim.VerifyAudit(".agent/audit.jsonl", kritrim.AuditKey(key)); err != nil { ... }</code></pre></div>
-    <p>With <code>AuditKey</code> (32+ random bytes from a KMS or secret store, not on the log's host) every entry is chained with HMAC-SHA256 and <code>audit.jsonl.head</code> holds a signed record of the last entry. Someone who can write the file but lacks the key cannot rewrite or truncate it without <code>VerifyAudit</code> failing. Without a key the plain SHA-256 chain only detects accidental corruption. Ship the head to external storage to detect a rollback of both files.</p>
-    <p>Before its first append, a sink verifies the existing log with its own key and refuses to extend a log that fails: one that was truncated, written unkeyed or with another key, or that lost its head. An empty key is an error, never "no signing". After a failed write the sink re-reads and re-verifies the file before the next one.</p>
-    <h2>Traces, metrics and logs</h2>
-    <div class="code" data-title="go"><pre><code class="language-go">a, _ := kritrim.New(kritrim.Config{
+if err := kritrim.VerifyAudit(".agent/audit.jsonl", kritrim.AuditKey(key)); err != nil {
+	log.Fatal(err)
+}</code></pre></div>
+    <p>Someone who can write the file but lacks the key cannot rewrite or truncate it without <code>VerifyAudit</code> failing. Without a key the plain SHA-256 chain only detects accidental corruption. Ship the head to external storage to detect a rollback of both files.</p>
+    <p>Before its first append, a sink verifies the existing log with its own key and refuses to extend a log that fails. An empty key is an error, never "no signing".</p>
+
+    <div class="what-happened"><b>What just happened</b>
+      <p>Every model call, tool call and approval appended a line. <code>VerifyAudit</code> walked the chain and checked the signed head.</p>
+    </div>
+
+    <h2>2. Export traces, metrics and logs</h2>
+    <p>Point OTLP at a collector (default local example below). No provider API key is required for export — only your collector endpoint.</p>
+    <div class="code" data-title="go"><pre><code class="language-go">a, err := kritrim.New(kritrim.Config{
 	Model: model,
 	Hooks: trace.OTel(trace.OTLPConfig{
 		Endpoint: "http://localhost:4318",
 		Service:  "support-agent",
 	}),
 })</code></pre></div>
-    <p><code>trace.OTel</code> sends OTLP/HTTP traces, metrics and logs. <code>trace.OTLP</code> is traces only; <code>trace.JSON(w)</code> writes one line per event with its run id and no conversation text. <code>trace.JSON(w, trace.Content())</code> adds prompts, replies, tool arguments and results, which makes the trace scorable offline and as sensitive as the conversation.</p>
+    <p><code>trace.OTel</code> sends OTLP/HTTP traces, metrics and logs. <code>trace.OTLP</code> is traces only; <code>trace.JSON(w)</code> writes one line per event with its run id and no conversation text. <code>trace.JSON(w, trace.Content())</code> adds prompts, replies, tool arguments and results — scorable offline and as sensitive as the conversation.</p>
+
+    <h2>3. Read the metric names</h2>
+    <p>Columns: metric name and the attributes attached to each point.</p>
     <div class="table"><table>
       <thead><tr><th>Metric</th><th>Attributes</th></tr></thead>
       <tbody>
@@ -1175,12 +1841,23 @@ if err := kritrim.VerifyAudit(".agent/audit.jsonl", kritrim.AuditKey(key)); err 
         <tr><td><code>kritrim.runs</code></td><td>stop</td></tr>
       </tbody>
     </table></div>
+
+    <div class="next-steps"><b>Next steps</b>
+      <ul>
+        <li><a href="#evals">Evals</a> — score <code>trace.JSON</code> recordings.</li>
+        <li><a href="#security">Security</a> — put guards before OTel in <code>Chain</code>.</li>
+        <li><a href="#reference-api">API reference</a> — <code>AuditFile</code>, <code>VerifyAudit</code>, packages.</li>
+      </ul>
+    </div>
   </section>
 
-  <section id="reference-api" class="page">
+
+    <section id="reference-api" class="page">
     <h1>API reference</h1>
-    <p class="lede">The surface is deliberately small. Everything else is a package you import when you need it.</p>
+    <p class="lede">A compact map of the exported surface. Prefer the tutorials for how to use each piece; use this page when you need the symbol name or package path. The surface is deliberately small — everything else is a package you import when you need it.</p>
+
     <h2>Core</h2>
+    <p>Columns: exported symbol and its role in the core module.</p>
     <div class="table"><table>
       <thead><tr><th>Symbol</th><th>Purpose</th></tr></thead>
       <tbody>
@@ -1202,7 +1879,9 @@ if err := kritrim.VerifyAudit(".agent/audit.jsonl", kritrim.AuditKey(key)); err 
         <tr><td><code>kritrim.Guardrail</code></td><td>a Bedrock guardrail on <code>ModelConfig</code></td></tr>
       </tbody>
     </table></div>
+
     <h2>Config</h2>
+    <p>Fields you pass to <code>kritrim.New</code>. Tutorials cover the ones you need; this is the full shape:</p>
     <div class="code" data-title="go"><pre><code class="language-go">type Config struct {
 	Model        Model
 	Fallback     []Model
@@ -1230,7 +1909,9 @@ if err := kritrim.VerifyAudit(".agent/audit.jsonl", kritrim.AuditKey(key)); err 
 	Roles        []string
 	Logger       func(string)
 }</code></pre></div>
+
     <h2>Packages</h2>
+    <p>Columns: import path suffix under <code>github.com/ganeshdipdumbare/kritrim</code> and what that package adds.</p>
     <div class="table"><table>
       <thead><tr><th>Import</th><th>What it adds</th></tr></thead>
       <tbody>
@@ -1246,11 +1927,24 @@ if err := kritrim.VerifyAudit(".agent/audit.jsonl", kritrim.AuditKey(key)); err 
         <tr><td><code>.../sandbox/sandboxtest</code></td><td>the conformance suite for your own adapter</td></tr>
       </tbody>
     </table></div>
+    <p>Stability and versioning: <a href="https://github.com/ganeshdipdumbare/kritrim/blob/main/docs/API.md">docs/API.md</a>. Coming from v0.9: <a href="https://github.com/ganeshdipdumbare/kritrim/blob/main/docs/MIGRATING.md">docs/MIGRATING.md</a>.</p>
+
+    <div class="next-steps"><b>Next steps</b>
+      <ul>
+        <li><a href="#quickstart">Quickstart</a> — build a first agent before scanning symbols.</li>
+        <li><a href="#concepts">Concepts</a> — glossary for the terms above.</li>
+        <li><a href="#status">Status and roadmap</a> — what shipped and what is out of scope.</li>
+      </ul>
+    </div>
   </section>
 
-  <section id="status" class="page">
+
+    <section id="status" class="page">
     <h1>Status and roadmap</h1>
-    <p class="lede">v1.0 is stable. What shipped, and what is deliberately out.</p>
+    <p class="lede">v1.0 is stable. This page lists what shipped and what is deliberately out of scope. For the full release plan with gates, see <a href="https://github.com/ganeshdipdumbare/kritrim/blob/main/docs/ROADMAP.md">docs/ROADMAP.md</a>.</p>
+
+    <h2>Shipped surface</h2>
+    <p>Columns: product area and its status in the v1 line.</p>
     <div class="table"><table>
       <thead><tr><th>Area</th><th>Status</th></tr></thead>
       <tbody>
@@ -1273,8 +1967,17 @@ if err := kritrim.VerifyAudit(".agent/audit.jsonl", kritrim.AuditKey(key)); err 
         <tr><td>Voice/bidi, workflow primitive, deploy guides, declarative config</td><td>out of scope</td></tr>
       </tbody>
     </table></div>
-    <div class="note"><b>Roadmap</b><div><p>The full release plan with gates is in <a href="https://github.com/ganeshdipdumbare/kritrim/blob/main/docs/ROADMAP.md">docs/ROADMAP.md</a>.</p></div></div>
+    <div class="note"><b>Roadmap</b><div><p>The full release plan with gates is in <a href="https://github.com/ganeshdipdumbare/kritrim/blob/main/docs/ROADMAP.md">docs/ROADMAP.md</a>. Changelog: <a href="https://github.com/ganeshdipdumbare/kritrim/blob/main/CHANGELOG.md">CHANGELOG.md</a>.</p></div></div>
+
+    <div class="next-steps"><b>Next steps</b>
+      <ul>
+        <li><a href="#installation">Installation</a> — add v1.0.0 to a module.</li>
+        <li><a href="#quickstart">Quickstart</a> — first running agent.</li>
+        <li><a href="#reference-api">API reference</a> — symbol map for the shipped surface.</li>
+      </ul>
+    </div>
   </section>
+
 
   <nav class="pager" id="pager" aria-label="Previous and next page"></nav>
 
@@ -1315,8 +2018,8 @@ if err := kritrim.VerifyAudit(".agent/audit.jsonl", kritrim.AuditKey(key)); err 
   </div>
 </div>
 
-<script src="assets/vendor/highlight/highlight.min.js?v=2387652655"></script>
-<script src="assets/vendor/highlight/go.min.js?v=2387652655"></script>
-<script src="assets/site.js?v=2387652655"></script>
+<script src="assets/vendor/highlight/highlight.min.js?v=3125181418"></script>
+<script src="assets/vendor/highlight/go.min.js?v=3125181418"></script>
+<script src="assets/site.js?v=3125181418"></script>
 </body>
 </html>

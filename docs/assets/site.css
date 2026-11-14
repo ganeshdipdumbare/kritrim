@@ -389,6 +389,39 @@ a.card::after { content: "+"; position: absolute; right: 16px; bottom: 8px; font
 .dg .box.em { fill: color-mix(in srgb, var(--accent) 7%, var(--bg)); stroke: var(--accent); }
 .dg .ln { fill: none; stroke: var(--accent); stroke-width: 1.4; stroke-dasharray: 5 4; }
 
+/* ---- tutorial chrome (tabs, next steps) ---- */
+.tabs { margin: 22px 0 28px; border: 1px solid var(--line-2); border-radius: 8px; overflow: hidden; background: var(--bg); }
+.tablist {
+  display: flex; flex-wrap: wrap; gap: 0; padding: 0 8px;
+  border-bottom: 1px solid var(--line); background: var(--bg-3); overflow-x: auto;
+}
+.tablist [role="tab"] {
+  appearance: none; border: 0; background: none; cursor: pointer;
+  padding: 12px 14px; margin: 0; font: 600 13px var(--f-mono); color: var(--fg-3);
+  border-bottom: 2px solid transparent; white-space: nowrap;
+}
+.tablist [role="tab"]:hover { color: var(--fg); }
+.tablist [role="tab"][aria-selected="true"] { color: var(--accent); border-bottom-color: var(--accent); }
+.tabpanel { padding: 18px 18px 4px; }
+.tabpanel[hidden] { display: none; }
+.tabpanel > :first-child { margin-top: 0; }
+.tabpanel .code { margin-top: 12px; }
+.next-steps {
+  margin: 40px 0 8px; padding: 20px 22px; border: 1px solid var(--line-2); border-radius: 8px;
+  background: color-mix(in srgb, var(--accent) 6%, var(--bg));
+}
+.next-steps > b {
+  display: block; margin: 0 0 10px; font: 600 14px var(--f-mono); letter-spacing: .04em;
+  text-transform: uppercase; color: var(--accent);
+}
+.next-steps ul { margin: 0; padding-left: 18px; }
+.next-steps li { margin-bottom: 6px; color: var(--fg-2); }
+.next-steps a { color: var(--link); }
+.what-happened { margin: 28px 0; }
+.what-happened > b {
+  display: block; margin: 0 0 10px; font: 600 15px var(--f-mono); color: var(--fg);
+}
+
 /* ---- tables ---- */
 .table { overflow-x: auto; margin: 22px 0 28px; border: 1px solid var(--line-2); border-radius: 8px; }
 table { border-collapse: collapse; width: 100%; font-size: 14px; }

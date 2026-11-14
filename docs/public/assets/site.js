@@ -396,4 +396,38 @@
       });
     });
   });
+
+  // ---- provider / content tabs ----
+  document.querySelectorAll(".tabs").forEach(function (root) {
+    var tabs = Array.prototype.slice.call(root.querySelectorAll('[role="tab"]'));
+    var panels = Array.prototype.slice.call(root.querySelectorAll("[data-panel]"));
+    function show(id) {
+      tabs.forEach(function (t) {
+        var on = t.getAttribute("data-tab") === id;
+        t.setAttribute("aria-selected", String(on));
+        t.tabIndex = on ? 0 : -1;
+      });
+      panels.forEach(function (p) { p.hidden = p.getAttribute("data-panel") !== id; });
+      try { localStorage.setItem("kritrim-tab:" + (root.id || root.getAttribute("data-tabs") || "default"), id); } catch (e) {}
+    }
+    var key = "kritrim-tab:" + (root.id || root.getAttribute("data-tabs") || "default");
+    var saved = null;
+    try { saved = localStorage.getItem(key); } catch (e) {}
+    var initial = (saved && tabs.some(function (t) { return t.getAttribute("data-tab") === saved; }))
+      ? saved
+      : (tabs[0] && tabs[0].getAttribute("data-tab"));
+    if (initial) show(initial);
+    tabs.forEach(function (t, i) {
+      t.addEventListener("click", function () { show(t.getAttribute("data-tab")); });
+      t.addEventListener("keydown", function (e) {
+        var d = e.key === "ArrowRight" || e.key === "ArrowDown" ? 1
+          : e.key === "ArrowLeft" || e.key === "ArrowUp" ? -1 : 0;
+        if (!d) return;
+        e.preventDefault();
+        var next = tabs[(i + d + tabs.length) % tabs.length];
+        show(next.getAttribute("data-tab"));
+        next.focus();
+      });
+    });
+  });
 })();
