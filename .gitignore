@@ -1,7 +1,7 @@
 .DS_Store
 *.test
 .agent/
-kritrim
+/kritrim
 
 # Vercel local link
 docs/public/.vercel/
