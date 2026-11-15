@@ -11,11 +11,15 @@ type runOptions struct {
 	images []Image
 	user   string
 	roles  []string
-	// decisions resumes a paused thread, keyed by interrupt ID.
+	// decisions resumes a paused thread, keyed by interrupt ID. A run works
+	// on its own copy, and each decision is used once.
 	decisions map[string]Decision
-	onEvent   func(Event)
-	runID     string
-	idemKey   string
+	// pending holds the interrupts of the paused step, by call ID. A decision
+	// applies only to the call it was given for.
+	pending map[string]Interrupt
+	onEvent func(Event)
+	runID   string
+	idemKey string
 
 	// model is the model this run uses: Config.Route's choice, or
 	// Config.Model. Resolved once, before the loop.

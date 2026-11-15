@@ -141,6 +141,12 @@ func (a *Agent) run(ctx context.Context, prompt string, emit func(Event), opts .
 			Message{Role: RoleUser, Content: prompt, Images: o.images})
 	}
 	a.audit(ctx, o, "run", "", "start")
+	// Copy the decisions: the run consumes them, and the caller's map is theirs.
+	o.decisions = copyDecisions(o.decisions)
+	o.pending = map[string]Interrupt{}
+	for _, in := range sess.Pending {
+		o.pending[in.CallID] = in
+	}
 	res, err = a.loop(ctx, sess, msgs, ps, o, emit)
 	return res, err
 }
@@ -460,6 +466,22 @@ func (a *Agent) executeCall(ctx context.Context, o runOptions, call ToolCall, em
 	return a.execute(ctx, o, call, emit, false)
 }
 
+// decisionFits reports whether the call is the one a decision was given
+// for: the same tool with the same arguments as the pending interrupt. A
+// model-chosen call ID that repeats an old one gets no approval from it.
+func (a *Agent) decisionFits(o runOptions, call ToolCall) bool {
+	in, ok := o.pending[call.ID]
+	return ok && in.Tool == call.Name && canonicalArgs(in.Args) == canonicalArgs(call.Args)
+}
+
+func copyDecisions(in map[string]Decision) map[string]Decision {
+	out := make(map[string]Decision, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
+
 // execute runs one call. swapped is true for a call a BeforeTool hook
 // rerouted: decisions recorded for the original tool do not apply to it.
 func (a *Agent) execute(ctx context.Context, o runOptions, call ToolCall, emit func(Event), swapped bool) (ToolResult, *Decision) {
@@ -468,8 +490,10 @@ func (a *Agent) execute(ctx context.Context, o runOptions, call ToolCall, emit f
 		return ToolResult{CallID: call.ID, Name: call.Name, Content: "unknown tool " + call.Name, IsError: true}, nil
 	}
 	var dec *Decision
-	if d, ok := o.decisions[call.ID]; ok && !swapped {
+	if d, ok := o.decisions[call.ID]; ok && !swapped && a.decisionFits(o, call) {
 		dec = &d
+		// One approval authorizes one call.
+		delete(o.decisions, call.ID)
 	}
 	if dec == nil && tool.risky() {
 		ap := &Approval{Tool: tool.Name, CallID: call.ID, Args: call.Args,
