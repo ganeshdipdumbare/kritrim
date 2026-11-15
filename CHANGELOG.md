@@ -19,6 +19,57 @@ from v1.0.0 on; see [docs/API.md](docs/API.md) for what the promise covers and
 - **SSH sandbox quotes environment values** and refuses entries that are not
   `NAME=value`. A value containing shell metacharacters could run commands on
   the remote host, and values with spaces were split.
+- **Resume decisions apply once, to the call they were given for.** A call that
+  reused an approved call ID with other arguments used to run unapproved.
+- **Audit failures stop the agent.** A failed audit write refuses the next
+  model or tool step. Writers share one log under an advisory lock, and the head
+  file gets a unique temp name.
+- **File tools keep their root with `Local()`.** The Local sandbox no longer
+  bypasses the file root jail. Relative sandbox roots are refused.
+- **Sealed boxes cannot use `secret://` in HTTP requests**, and the box's
+  request is refused rather than resolved from the host.
+- **Output from sandboxes is capped** (8 MiB per stream), and streamed output
+  keeps long lines whole instead of dropping them past 64 KiB.
+- **Docker env values stay off the command line.** Names go on argv, and values
+  go in the docker client's environment. Docker stderr has the values removed.
+  Docker requests honor `ExecRequest.Timeout`.
+- **Docker and microsandbox refuse names that start with `-`** for images,
+  containers and capabilities.
+- **SSH sandbox sets the file mode on write** and refuses more local-code
+  options (`PKCS11Provider`, `SecurityKeyProvider`, `Match`, `Include`).
+- **MCP**: secret headers are resolved per request, and the caller's header map
+  is never written to. Responses are capped at 8 MiB, a too-long SSE frame is an
+  error, and the session ID is guarded for parallel calls.
+- **A2A server**: the message is validated before an agent is created. Store
+  errors fail closed. One run per task at a time. Agents in use are not
+  evicted, and a principal evicts only its own idle contexts. Internal errors
+  are logged, and clients get a generic message.
+- **Signed sessions and file sessions**: `SignedSessions.Load` refuses a record
+  under another thread's key. `FileSessions.Save` is serialized by a directory
+  lock, so concurrent saves cannot both win.
+- **SigV4** signs the canonical query string with RFC 3986 encoding and keeps
+  repeated keys, so requests with spaces or repeated parameters verify.
+- **Dedupe and webhooks**: an expired unfinished claim can be taken over. Runs
+  have a timeout (`WebhookConfig.RunTimeout`, default 10 minutes). Only an
+  over-size body is a 413. A failed read is a 400.
+- **OTLP tracing** no longer leaks a span entry for runs without a run ID.
+  Those runs are not traced.
+- **vmagent unix socket** is owner-only, and a live socket is not unlinked.
+- **CI** pins its actions to commit SHAs and its Go tools to versions.
+
+### Added
+
+- `ExecRequest.Allow`: when set, the Local machine refuses commands outside it.
+  The agent always sets it.
+- `WebhookConfig.RunTimeout`.
+
+### Known limits
+
+- The audit head can lag the log by one entry after a crash. One trailing entry
+  can be removed undetected in that window.
+- Commands are matched by name on the host PATH. Pin absolute paths in the
+  allowlist to avoid a PATH substitution.
+- Docker `Start` is long-lived, so `ExecRequest.Timeout` does not bound it.
 
 ## v1.0.0 — 2026-11-14
 
