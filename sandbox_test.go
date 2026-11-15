@@ -105,7 +105,7 @@ func TestDockerSandbox(t *testing.T) {
 }
 
 func TestDockerRunArgsHardened(t *testing.T) {
-	args := strings.Join(dockerRunArgs(DockerConfig{}, "n", "img", OpenConfig{}), " ")
+	args := strings.Join(dockerRunArgs(DockerConfig{}, "n", "img", OpenConfig{}, ""), " ")
 	for _, want := range []string{"--cap-drop ALL", "--security-opt no-new-privileges", "--network none",
 		"--memory 2g", "--cpus 2", "--pids-limit 512"} {
 		if !strings.Contains(args, want) {
@@ -113,7 +113,7 @@ func TestDockerRunArgsHardened(t *testing.T) {
 		}
 	}
 	args = strings.Join(dockerRunArgs(DockerConfig{User: "1000:1000", ReadOnly: true, Memory: "none",
-		CPUs: "none", PidsLimit: -1, Network: true, CapAdd: []string{"CHOWN"}}, "n", "img", OpenConfig{}), " ")
+		CPUs: "none", PidsLimit: -1, Network: true, CapAdd: []string{"CHOWN"}}, "n", "img", OpenConfig{}, ""), " ")
 	for _, want := range []string{"--user 1000:1000", "--read-only", "--tmpfs /tmp", "--cap-add CHOWN"} {
 		if !strings.Contains(args, want) {
 			t.Fatalf("missing %q in %s", want, args)

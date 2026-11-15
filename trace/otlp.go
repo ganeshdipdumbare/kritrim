@@ -40,7 +40,9 @@ type runSpans struct {
 	start time.Time
 	spans []map[string]any
 	model *openSpan
-	tool  *openSpan
+	// tools holds the open span of each tool call, by call ID: calls in one
+	// step run in parallel, so one slot would lose all but one of them.
+	tools map[string]*openSpan
 }
 
 // OTLP returns hooks that export one trace per run to an OTLP/HTTP collector.
@@ -95,7 +97,7 @@ func OTLP(cfg OTLPConfig) kritrim.Hooks {
 			e.send(r.spans)
 		},
 		BeforeModel: func(ctx context.Context, ev *kritrim.ModelEvent) error {
-			e.open(ctx, "model", map[string]string{"messages": itoa(len(ev.Request.Messages))}, true)
+			e.open(ctx, "model", map[string]string{"messages": itoa(len(ev.Request.Messages))}, true, "")
 			return nil
 		},
 		AfterModel: func(ctx context.Context, ev *kritrim.ModelEvent) {
@@ -107,10 +109,10 @@ func OTLP(cfg OTLPConfig) kritrim.Hooks {
 				attrs["tokens.out"] = itoa(ev.Response.Usage.Out)
 				attrs["tool_calls"] = itoa(len(ev.Response.ToolCalls))
 			}
-			e.close(ctx, true, attrs, status)
+			e.close(ctx, true, attrs, status, "")
 		},
 		BeforeTool: func(ctx context.Context, ev *kritrim.ToolEvent) error {
-			e.open(ctx, "tool "+ev.Call.Name, map[string]string{"tool": ev.Call.Name}, false)
+			e.open(ctx, "tool "+ev.Call.Name, map[string]string{"tool": ev.Call.Name}, false, ev.Call.ID)
 			return nil
 		},
 		AfterTool: func(ctx context.Context, ev *kritrim.ToolEvent) {
@@ -120,7 +122,7 @@ func OTLP(cfg OTLPConfig) kritrim.Hooks {
 				status = map[string]any{"code": 2}
 				attrs["error"] = "true"
 			}
-			e.close(ctx, false, attrs, status)
+			e.close(ctx, false, attrs, status, ev.Call.ID)
 		},
 	}
 }
@@ -131,7 +133,7 @@ type otlp struct {
 	runs map[string]*runSpans
 }
 
-func (e *otlp) open(ctx context.Context, name string, attrs map[string]string, model bool) {
+func (e *otlp) open(ctx context.Context, name string, attrs map[string]string, model bool, callID string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	r := e.runs[kritrim.RunIDFrom(ctx)]
@@ -141,29 +143,30 @@ func (e *otlp) open(ctx context.Context, name string, attrs map[string]string, m
 	s := &openSpan{id: newSpanID(), start: time.Now(), name: name, attrs: attrs}
 	if model {
 		r.model = s
-	} else {
-		r.tool = s
+		return
 	}
+	if r.tools == nil {
+		r.tools = map[string]*openSpan{}
+	}
+	r.tools[callID] = s
 }
 
-func (e *otlp) close(ctx context.Context, model bool, attrs map[string]string, status map[string]any) {
+func (e *otlp) close(ctx context.Context, model bool, attrs map[string]string, status map[string]any, callID string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	r := e.runs[kritrim.RunIDFrom(ctx)]
 	if r == nil {
 		return
 	}
-	s := r.tool
+	var s *openSpan
 	if model {
-		s = r.model
+		s, r.model = r.model, nil
+	} else {
+		s = r.tools[callID]
+		delete(r.tools, callID)
 	}
 	if s == nil {
 		return
-	}
-	if model {
-		r.model = nil
-	} else {
-		r.tool = nil
 	}
 	r.spans = append(r.spans, span(r.trace, r.root, s.id, s.name, s.start, time.Now(), 1, attrs, status))
 }

@@ -87,6 +87,25 @@ from v1.0.0 on; see [docs/API.md](docs/API.md) for what the promise covers and
   IdentityFile that starts with `-`.
 - **kritrim-evals** kills a case's whole process group on timeout.
 
+- **Docker sandbox env goes through a private `--env-file`** (0600, removed
+  after the call or once a started process ends). Values stay off argv and out
+  of the docker client's own environment, so a name such as `HOME` or `PATH`
+  cannot change how the client runs. Values with newlines are refused.
+- **Docker file reads through exec return raw bytes** and fail rather than
+  return a file cut at the output limit.
+- **A2A**: each principal holds at most its share of cached contexts
+  (`ServerConfig.MaxContextsPerPrincipal`, default MaxContexts/10), so one
+  principal cannot fill the cache. A running task owned by someone else answers
+  "task not found", so task IDs in use are not revealed.
+- **Webhook**: `WebhookConfig.BindPath` makes the signature cover the request
+  path (`trigger.SignPath`), so one secret shared by several endpoints cannot
+  replay a delivery across them. Off by default for compatibility.
+- **SQL dedupe** sweeps expired unfinished rows, not only finished ones.
+- **OTLP** tracks each tool call's span by call ID, so parallel calls keep their
+  spans.
+- **vmagent** no longer changes the socket's mode by path, so a symlink planted
+  there cannot redirect it.
+
 ### Added
 
 - `ExecRequest.Allow`: when set, the Local machine refuses commands outside it.

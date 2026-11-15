@@ -149,6 +149,9 @@ type ServerConfig struct {
 	// MaxRunsPerPrincipal caps how many runs one principal has in flight at
 	// once. Default 8. Each run is an LLM session that costs money.
 	MaxRunsPerPrincipal int
+	// MaxContextsPerPrincipal caps the cached contexts one principal holds.
+	// Default MaxContexts/10.
+	MaxContextsPerPrincipal int
 
 	// Push stores task webhooks. Default MemoryPush.
 	Push PushStore
@@ -174,9 +177,10 @@ type Server struct {
 	mu         sync.Mutex
 	contexts   map[string]*contextEntry
 	cancels    map[string]context.CancelFunc
-	ctxBusy    map[string]bool // principal+context with a run in flight
-	inflight   map[string]int  // principal -> runs in flight
-	taskMu     sync.Mutex      // serializes task status read-modify-write
+	taskOwner  map[string]string // running task -> principal that started it
+	ctxBusy    map[string]bool   // principal+context with a run in flight
+	inflight   map[string]int    // principal -> runs in flight
+	taskMu     sync.Mutex        // serializes task status read-modify-write
 	pushClient *http.Client
 	fileClient *http.Client
 }
@@ -227,6 +231,12 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 	if cfg.MaxRunsPerPrincipal <= 0 {
 		cfg.MaxRunsPerPrincipal = 8
 	}
+	if cfg.MaxContextsPerPrincipal <= 0 {
+		cfg.MaxContextsPerPrincipal = cfg.MaxContexts / 10
+		if cfg.MaxContextsPerPrincipal < 1 {
+			cfg.MaxContextsPerPrincipal = 1
+		}
+	}
 	if cfg.Card.ProtocolVersion == "" {
 		cfg.Card.ProtocolVersion = "0.3.0"
 	}
@@ -256,7 +266,7 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 	cfg.Card.Capabilities.Streaming = true
 	cfg.Card.Capabilities.PushNotifications = true
 	return &Server{cfg: cfg, contexts: map[string]*contextEntry{}, cancels: map[string]context.CancelFunc{},
-		ctxBusy: map[string]bool{}, inflight: map[string]int{},
+		ctxBusy: map[string]bool{}, inflight: map[string]int{}, taskOwner: map[string]string{},
 		pushClient: pushClient, fileClient: fileClient}, nil
 }
 
@@ -386,6 +396,12 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request, id json.RawMessage
 	switch {
 	case s.cancels[taskID] != nil:
 		s.mu.Unlock()
+		// Another principal's running task looks like no task at all, so the
+		// reply does not reveal which task IDs are in use.
+		if s.taskOwner[taskID] != who {
+			s.fail(w, id, -32001, "task not found")
+			return
+		}
 		s.fail(w, id, -32000, "task already has an active run")
 		return
 	case s.ctxBusy[ctxKey]:
@@ -398,12 +414,14 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request, id json.RawMessage
 		return
 	}
 	s.cancels[taskID] = cancel
+	s.taskOwner[taskID] = who
 	s.ctxBusy[ctxKey] = true
 	s.inflight[who]++
 	s.mu.Unlock()
 	defer func() {
 		s.mu.Lock()
 		delete(s.cancels, taskID)
+		delete(s.taskOwner, taskID)
 		delete(s.ctxBusy, ctxKey)
 		s.inflight[who]--
 		if s.inflight[who] == 0 {
@@ -684,16 +702,23 @@ func (s *Server) agent(who, ctxID string) (*kritrim.Agent, func(), error) {
 		e.busy++
 		return e.agent, s.releaser(e), nil
 	}
-	if len(s.contexts) >= s.cfg.MaxContexts {
-		// At the cap, a principal may only evict its own idle contexts.
-		// Evicting another principal's context would close their agent.
-		var oldestID string
-		var oldest time.Time
-		for id, e := range s.contexts {
-			if e.who == who && e.busy == 0 && (oldestID == "" || e.used.Before(oldest)) {
-				oldestID, oldest = id, e.used
-			}
+	// A principal may hold only its share of the cache, so one principal
+	// cannot fill it and refuse everyone else. At the cap or over the share,
+	// a principal may only evict its own idle contexts: evicting another
+	// principal's context would close their agent.
+	mine := 0
+	var oldestID string
+	var oldest time.Time
+	for id, e := range s.contexts {
+		if e.who != who {
+			continue
 		}
+		mine++
+		if e.busy == 0 && (oldestID == "" || e.used.Before(oldest)) {
+			oldestID, oldest = id, e.used
+		}
+	}
+	if len(s.contexts) >= s.cfg.MaxContexts || mine >= s.cfg.MaxContextsPerPrincipal {
 		if oldestID == "" {
 			_ = a.Close()
 			return nil, nil, errors.New("too many active contexts")

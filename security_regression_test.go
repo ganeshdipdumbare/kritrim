@@ -118,24 +118,33 @@ func TestResumeDecisionDoesNotReplay(t *testing.T) {
 }
 
 // Env values must not appear on the docker command line, where any local
-// user can read them from ps. Names go on argv; values go in the client env.
+// user can read them from ps. They travel in a private env file instead, and
+// the file is removed afterwards.
 func TestDockerEnvValuesStayOffArgv(t *testing.T) {
-	args := dockerExecArgs("box", ExecRequest{Command: []string{"true"}, Env: []string{"TOKEN=s3cret-value"}})
+	path, cleanup, err := envFile([]string{"TOKEN=s3cret-value"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	args := dockerExecArgs("box", ExecRequest{Command: []string{"true"}}, path)
 	joined := strings.Join(args, " ")
-	if strings.Contains(joined, "s3cret-value") {
-		t.Fatalf("value on argv: %s", joined)
+	if strings.Contains(joined, "s3cret-value") || !strings.Contains(joined, "--env-file "+path) {
+		t.Fatalf("env not passed by file: %s", joined)
 	}
-	if !strings.Contains(joined, "-e TOKEN") {
-		t.Fatalf("name not passed: %s", joined)
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
 	}
-	found := false
-	for _, e := range clientEnv([]string{"TOKEN=s3cret-value"}) {
-		if e == "TOKEN=s3cret-value" {
-			found = true
-		}
+	if fi.Mode().Perm() != 0o600 {
+		t.Fatalf("env file mode %v, want 0600", fi.Mode().Perm())
 	}
-	if !found {
-		t.Fatal("value not in the docker client environment")
+	b, _ := os.ReadFile(path)
+	if string(b) != "TOKEN=s3cret-value\n" {
+		t.Fatalf("env file holds %q", b)
+	}
+	cleanup()
+	if _, err := os.Stat(path); err == nil {
+		t.Fatal("env file was not removed")
 	}
 }
 
@@ -253,11 +262,10 @@ func TestMemorySessionsDoNotAliasNestedData(t *testing.T) {
 	}
 }
 
-// Docker reads its own configuration from DOCKER_* variables. A sandbox value
-// must not be able to set them.
-func TestDockerClientVariablesAreReserved(t *testing.T) {
-	if err := checkEnv([]string{"DOCKER_HOST=tcp://evil:2375"}); err == nil {
-		t.Fatal("DOCKER_HOST accepted as a sandbox env value")
+// A value that would break the env file's one-entry-per-line format is refused.
+func TestDockerEnvRejectsNewlines(t *testing.T) {
+	if err := checkEnv([]string{"TOKEN=a\nb=c"}); err == nil {
+		t.Fatal("a newline in a value was accepted")
 	}
 	if err := checkEnv([]string{"APP_TOKEN=x"}); err != nil {
 		t.Fatalf("ordinary variable refused: %v", err)

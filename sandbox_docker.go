@@ -50,7 +50,7 @@ type DockerConfig struct {
 }
 
 // dockerRunArgs builds the hardened `docker run` command line.
-func dockerRunArgs(cfg DockerConfig, name, image string, opts OpenConfig) []string {
+func dockerRunArgs(cfg DockerConfig, name, image string, opts OpenConfig, envPath string) []string {
 	args := []string{"run", "-d", "--rm", "--name", name,
 		"--cap-drop", "ALL", "--security-opt", "no-new-privileges"}
 	for _, c := range cfg.CapAdd {
@@ -86,7 +86,9 @@ func dockerRunArgs(cfg DockerConfig, name, image string, opts OpenConfig) []stri
 	if cfg.ReadOnly {
 		args = append(args, "--read-only", "--tmpfs", "/tmp:rw,exec,nosuid,size=512m")
 	}
-	args = append(args, envFlags(opts.Env)...)
+	if envPath != "" {
+		args = append(args, "--env-file", envPath)
+	}
 	// "--" ends option parsing, so an image name can never be read as a flag.
 	return append(args, "--", image, "sh", "-c", "while true; do sleep 3600; done")
 }
@@ -130,7 +132,12 @@ func (d *dockerSandbox) Open(ctx context.Context, opts OpenConfig) (Machine, err
 		return nil, err
 	}
 	name := "kritrim-" + newID()[:10]
-	args := dockerRunArgs(d.cfg, name, image, opts)
+	envPath, cleanup, err := envFile(opts.Env)
+	if err != nil {
+		return nil, err
+	}
+	defer cleanup()
+	args := dockerRunArgs(d.cfg, name, image, opts, envPath)
 	if _, stderr, code, err := dockerRunWith(ctx, args, nil, opts.Env); err != nil || code != 0 {
 		return nil, fmt.Errorf("kritrim: docker run: %s %w", stderr, err)
 	}
@@ -154,7 +161,12 @@ func (m *dockerMachine) Exec(ctx context.Context, r ExecRequest) (ExecResult, er
 	}
 	ctx, cancel := withTimeout(ctx, r.Timeout)
 	defer cancel()
-	out, errb, code, err := dockerRunWith(ctx, dockerExecArgs(m.name, r), r.Stdin, r.Env)
+	envPath, cleanup, err := envFile(r.Env)
+	if err != nil {
+		return ExecResult{}, err
+	}
+	defer cleanup()
+	out, errb, code, err := dockerRunWith(ctx, dockerExecArgs(m.name, r, envPath), r.Stdin, r.Env)
 	return ExecResult{Stdout: out.String(), Stderr: errb, Exit: code}, err
 }
 
@@ -167,13 +179,15 @@ func (m *dockerMachine) ExecStream(ctx context.Context, r ExecRequest, emit func
 	}
 	ctx, cancel := withTimeout(ctx, r.Timeout)
 	defer cancel()
-	args := dockerExecArgs(m.name, r)
+	envPath, cleanup, err := envFile(r.Env)
+	if err != nil {
+		return ExecResult{}, err
+	}
+	defer cleanup()
+	args := dockerExecArgs(m.name, r, envPath)
 	cmd := exec.CommandContext(ctx, "docker", args...)
 	if r.Stdin != nil {
 		cmd.Stdin = bytes.NewReader(r.Stdin)
-	}
-	if r.Env != nil {
-		cmd.Env = clientEnv(r.Env)
 	}
 	out, err := cmd.StdoutPipe()
 	if err != nil {
@@ -219,7 +233,7 @@ func (m *dockerMachine) ExecStream(ctx context.Context, r ExecRequest, emit func
 
 // dockerExecArgs builds `docker exec` for a request. Without -i docker
 // never forwards stdin, so a command reading it would see nothing.
-func dockerExecArgs(name string, r ExecRequest) []string {
+func dockerExecArgs(name string, r ExecRequest, envPath string) []string {
 	args := []string{"exec"}
 	if r.Stdin != nil {
 		args = append(args, "-i")
@@ -227,42 +241,52 @@ func dockerExecArgs(name string, r ExecRequest) []string {
 	if r.Dir != "" {
 		args = append(args, "-w", r.Dir)
 	}
-	args = append(args, envFlags(r.Env)...)
+	if envPath != "" {
+		args = append(args, "--env-file", envPath)
+	}
 	// docker exec stops reading flags at the container name, so command
 	// arguments are never options. (A "--" here would become the command.)
 	args = append(args, name)
 	return append(args, r.Command...)
 }
 
-// envFlags passes each NAME=value by name. `-e NAME` makes docker read the
-// value from the environment it runs in (clientEnv), so values stay off argv
-// and out of `ps`.
-func envFlags(env []string) []string {
-	var args []string
-	for _, e := range env {
-		k, _, _ := strings.Cut(e, "=")
-		args = append(args, "-e", k)
+// envFile writes the sandbox env to a private file for `--env-file`, so
+// values stay off argv (visible to ps) and out of the docker client's own
+// environment. The caller removes the file with cleanup. It returns no path
+// when there is no env.
+func envFile(env []string) (string, func(), error) {
+	noop := func() {}
+	if len(env) == 0 {
+		return "", noop, nil
 	}
-	return args
+	f, err := os.CreateTemp("", "kritrim-env-*")
+	if err != nil {
+		return "", noop, err
+	}
+	cleanup := func() { _ = os.Remove(f.Name()) }
+	for _, e := range env {
+		if _, err := fmt.Fprintln(f, e); err != nil {
+			f.Close()
+			cleanup()
+			return "", noop, err
+		}
+	}
+	if err := f.Close(); err != nil {
+		cleanup()
+		return "", noop, err
+	}
+	return f.Name(), cleanup, nil
 }
-
-// clientEnv is the environment for a docker client that carries env values.
-func clientEnv(env []string) []string { return append(os.Environ(), env...) }
 
 var envName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
-// checkEnv refuses entries whose name is not a plain identifier.
+// checkEnv refuses entries that are not NAME=value with a plain name, or
+// whose value would break the env file's one-entry-per-line format.
 func checkEnv(env []string) error {
 	for _, e := range env {
-		k, _, _ := strings.Cut(e, "=")
-		if !envName.MatchString(k) {
-			return errors.New("kritrim: environment entries must be NAME=value")
-		}
-		// The docker client reads DOCKER_HOST, DOCKER_CONFIG and friends from
-		// its own environment, and these entries go there. Refuse them, so a
-		// sandbox value cannot redirect or reconfigure the privileged client.
-		if strings.HasPrefix(strings.ToUpper(k), "DOCKER_") {
-			return fmt.Errorf("kritrim: environment name %q is reserved for the docker client", k)
+		k, v, _ := strings.Cut(e, "=")
+		if !envName.MatchString(k) || strings.ContainsAny(v, "\r\n") {
+			return errors.New("kritrim: environment entries must be NAME=value on one line")
 		}
 	}
 	return nil
@@ -295,14 +319,23 @@ func (m *dockerMachine) Start(ctx context.Context, r StartRequest) (Process, err
 	if r.Dir != "" {
 		args = append(args, "-w", r.Dir)
 	}
-	args = append(args, envFlags(r.Env)...)
+	envPath, cleanup, err := envFile(r.Env)
+	if err != nil {
+		return nil, err
+	}
+	handed := false // true once the process owns the file
+	defer func() {
+		if !handed {
+			cleanup()
+		}
+	}()
+	if envPath != "" {
+		args = append(args, "--env-file", envPath)
+	}
 	args = append(args, m.name)
 	args = append(args, r.Command...)
 	// Not CommandContext: the process outlives the start context.
 	cmd := exec.Command("docker", args...)
-	if r.Env != nil {
-		cmd.Env = clientEnv(r.Env)
-	}
 	in, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, err
@@ -315,16 +348,21 @@ func (m *dockerMachine) Start(ctx context.Context, r StartRequest) (Process, err
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
-	return &dockerProc{cmd: cmd, in: in, out: out}, nil
+	handed = true
+	return &dockerProc{cmd: cmd, in: in, out: out, cleanup: cleanup}, nil
 }
 
 func (m *dockerMachine) Read(ctx context.Context, p string) ([]byte, error) {
 	if m.viaExec {
-		out, stderr, code, err := dockerRun(ctx, []string{"exec", m.name, "cat", "--", p}, nil)
+		out, stderr, code, err := dockerRunWith(ctx, []string{"exec", m.name, "cat", "--", p}, nil, nil)
 		if err != nil || code != 0 {
 			return nil, fmt.Errorf("kritrim: docker read %s: %s %w", p, stderr, err)
 		}
-		return []byte(out), nil
+		// Raw bytes, and an error rather than a silently cut file.
+		if out.Truncated() {
+			return nil, fmt.Errorf("kritrim: %s is larger than %d bytes", p, boxutil.MaxOutput)
+		}
+		return out.Bytes(), nil
 	}
 	out, stderr, code, err := dockerRunWith(ctx, []string{"cp", m.name + ":" + p, "-"}, nil, nil)
 	if err != nil || code != 0 {
@@ -380,6 +418,9 @@ type dockerProc struct {
 	mu   sync.Mutex
 	err  error
 	done bool
+	// cleanup removes the env file. docker reads it after the process starts,
+	// so it is removed only once the process has ended.
+	cleanup func()
 }
 
 func (p *dockerProc) Stdin() io.WriteCloser { return p.in }
@@ -393,6 +434,7 @@ func (p *dockerProc) Wait() error {
 	}
 	p.done = true
 	p.err = p.cmd.Wait()
+	p.cleanup()
 	return p.err
 }
 
@@ -408,16 +450,12 @@ func dockerRun(ctx context.Context, args []string, stdin []byte) (string, string
 	return out.String(), errb, code, err
 }
 
-// dockerRunWith runs the docker CLI with capped output. env is set on the
-// client's environment, and its values are removed from any stderr returned,
-// since docker can echo them in an error.
+// dockerRunWith runs the docker CLI with capped output. The values in env are
+// removed from any stderr returned, since docker can echo them in an error.
 func dockerRunWith(ctx context.Context, args []string, stdin []byte, env []string) (*boxutil.Capped, string, int, error) {
 	cmd := exec.CommandContext(ctx, "docker", args...)
 	if stdin != nil {
 		cmd.Stdin = bytes.NewReader(stdin)
-	}
-	if env != nil {
-		cmd.Env = clientEnv(env)
 	}
 	out, errb := boxutil.NewCapped(), boxutil.NewCapped()
 	cmd.Stdout, cmd.Stderr = out, errb

@@ -328,3 +328,14 @@ func TestStaleLeaderCannotReleaseNewerClaim(t *testing.T) {
 		t.Fatal("a stale leader's release freed the live claim")
 	}
 }
+
+// With BindPath, a MAC made for one endpoint does not verify on another that
+// shares the secret.
+func TestSignPathBindsEndpoint(t *testing.T) {
+	body := []byte(`{"x":1}`)
+	a := signPath([]byte("s"), "1", "k", "/hooks/a", body)
+	b := signPath([]byte("s"), "1", "k", "/hooks/b", body)
+	if a == b {
+		t.Fatal("the signature does not depend on the path")
+	}
+}

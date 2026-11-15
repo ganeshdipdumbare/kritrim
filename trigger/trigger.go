@@ -34,6 +34,10 @@ type WebhookConfig struct {
 	MaxBody int64
 	// Tolerance is how far X-Kritrim-Timestamp may be from now. Default 5m.
 	Tolerance time.Duration
+	// BindPath makes the signature cover the request path (see SignPath). Off
+	// by default, so existing senders keep working; turn it on when one secret
+	// is shared by several endpoints.
+	BindPath bool
 	// RunTimeout bounds one delivery's agent run. A run that hangs past it
 	// fails and releases its claim, so duplicates are not held forever.
 	// Default 10 minutes.
@@ -73,6 +77,20 @@ func Sign(secret string, ts time.Time, key string, body []byte) string {
 func sign(secret []byte, ts, key string, body []byte) string {
 	mac := hmac.New(sha256.New, secret)
 	fmt.Fprintf(mac, "kritrim-webhook-v1\n%d:%s\n%d:%s\n%d:", len(ts), ts, len(key), key, len(body))
+	mac.Write(body)
+	return "sha256=" + hex.EncodeToString(mac.Sum(nil))
+}
+
+// SignPath is Sign for an endpoint configured with BindPath. The MAC also
+// covers the request path, so a delivery signed for one endpoint is refused
+// by another that shares the secret.
+func SignPath(secret string, ts time.Time, key, path string, body []byte) string {
+	return signPath([]byte(secret), strconv.FormatInt(ts.Unix(), 10), key, path, body)
+}
+
+func signPath(secret []byte, ts, key, path string, body []byte) string {
+	mac := hmac.New(sha256.New, secret)
+	fmt.Fprintf(mac, "kritrim-webhook-v2\n%d:%s\n%d:%s\n%d:%s\n%d:", len(ts), ts, len(key), key, len(path), path, len(body))
 	mac.Write(body)
 	return "sha256=" + hex.EncodeToString(mac.Sum(nil))
 }
@@ -153,7 +171,11 @@ func (h *webhook) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ts := r.Header.Get(TimestampHeader)
 	key := r.Header.Get(IdempotencyHeader)
 	sig := r.Header.Get(SignatureHeader)
-	if !h.fresh(ts) || !hmac.Equal([]byte(sig), []byte(sign(h.secret, ts, key, body))) {
+	want := sign(h.secret, ts, key, body)
+	if h.cfg.BindPath {
+		want = signPath(h.secret, ts, key, r.URL.Path, body)
+	}
+	if !h.fresh(ts) || !hmac.Equal([]byte(sig), []byte(want)) {
 		http.Error(w, "bad signature", http.StatusUnauthorized)
 		return
 	}
