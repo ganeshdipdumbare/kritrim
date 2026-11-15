@@ -104,8 +104,10 @@ func Webhook(cfg WebhookConfig) (http.Handler, error) {
 	if cfg.DedupeTTL <= 0 {
 		cfg.DedupeTTL = 24 * time.Hour
 	}
-	if cfg.DedupeTTL < 2*cfg.Tolerance {
-		cfg.DedupeTTL = 2 * cfg.Tolerance
+	// A claim must outlive the run it guards. Shorter, and it can expire
+	// mid-run and let a retry run the delivery a second time.
+	if floor := cfg.RunTimeout + 2*cfg.Tolerance; cfg.DedupeTTL < floor {
+		cfg.DedupeTTL = floor
 	}
 	if cfg.Store == nil {
 		cfg.Store = MemoryDedupe(0)
@@ -167,7 +169,8 @@ func (h *webhook) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	sum := sha256.Sum256(body)
 	print := hex.EncodeToString(sum[:])
 	for {
-		c, err := h.cfg.Store.Claim(r.Context(), id, print, time.Now().Add(h.cfg.DedupeTTL))
+		expires := time.Now().Add(h.cfg.DedupeTTL)
+		c, err := h.cfg.Store.Claim(r.Context(), id, print, expires)
 		switch {
 		case errors.Is(err, ErrBusy):
 			w.Header().Set("Retry-After", "5")
@@ -187,7 +190,7 @@ func (h *webhook) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusOK, out)
 			return
 		case c.Won:
-			h.run(w, r, id, body)
+			h.run(w, r, id, body, expires)
 			return
 		}
 		// Running elsewhere: wait for it, then look again. A leader
@@ -201,7 +204,7 @@ func (h *webhook) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // run executes a delivery this handler won. Every claim is completed or
 // released, even if a callback or the run panics, so duplicates never wait
 // on an abandoned delivery.
-func (h *webhook) run(w http.ResponseWriter, r *http.Request, id string, body []byte) {
+func (h *webhook) run(w http.ResponseWriter, r *http.Request, id string, body []byte, expires time.Time) {
 	done := make(chan struct{})
 	h.mu.Lock()
 	h.waiting[id] = done
@@ -210,10 +213,12 @@ func (h *webhook) run(w http.ResponseWriter, r *http.Request, id string, body []
 	// retries gets the same result instead of a second run.
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), h.cfg.RunTimeout)
 	defer cancel()
+	// Release and Complete act only on this leader's claim (see withFence).
+	fctx := withFence(ctx, expires)
 	finished := false
 	defer func() {
 		if !finished {
-			_ = h.cfg.Store.Release(ctx, id)
+			_ = h.cfg.Store.Release(fctx, id)
 		}
 		h.mu.Lock()
 		delete(h.waiting, id)
@@ -228,7 +233,7 @@ func (h *webhook) run(w http.ResponseWriter, r *http.Request, id string, body []
 	}
 	out := map[string]any{"text": res.Text, "thread": res.Thread, "stop": res.Stop}
 	result, _ := json.Marshal(out)
-	if err := h.cfg.Store.Complete(ctx, id, result); err != nil {
+	if err := h.cfg.Store.Complete(fctx, id, result); err != nil {
 		h.logf("webhook dedupe: %v", err)
 	}
 	finished = true

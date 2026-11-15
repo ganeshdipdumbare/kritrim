@@ -63,3 +63,13 @@ func TestCheckOptionRefusesLocalCodeOptions(t *testing.T) {
 		}
 	}
 }
+
+// A host or identity file starting with "-" would be read by ssh as an option.
+func TestNewRefusesOptionLikeHost(t *testing.T) {
+	if _, err := New(Config{Host: "-oProxyCommand=id", WorkingDir: "/"}); err == nil {
+		t.Fatal("option-like Host accepted")
+	}
+	if _, err := New(Config{Host: "box", IdentityFile: "-oX=1", WorkingDir: "/"}); err == nil {
+		t.Fatal("option-like IdentityFile accepted")
+	}
+}

@@ -258,6 +258,12 @@ func checkEnv(env []string) error {
 		if !envName.MatchString(k) {
 			return errors.New("kritrim: environment entries must be NAME=value")
 		}
+		// The docker client reads DOCKER_HOST, DOCKER_CONFIG and friends from
+		// its own environment, and these entries go there. Refuse them, so a
+		// sandbox value cannot redirect or reconfigure the privileged client.
+		if strings.HasPrefix(strings.ToUpper(k), "DOCKER_") {
+			return fmt.Errorf("kritrim: environment name %q is reserved for the docker client", k)
+		}
 	}
 	return nil
 }

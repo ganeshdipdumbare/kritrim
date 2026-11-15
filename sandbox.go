@@ -63,6 +63,8 @@ type StartRequest struct {
 	Command []string
 	Dir     string
 	Env     []string
+	// Allow, when non-nil, lists the commands the Local machine may start.
+	Allow []string
 }
 
 // Process is a long-lived process inside a machine.

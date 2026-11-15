@@ -86,8 +86,17 @@ func (a *Agent) idemBegin(key string) (*idemEntry, bool) {
 	if a.idem == nil {
 		a.idem = map[string]*idemEntry{}
 	}
-	if e := a.idem[key]; e != nil && time.Now().Before(e.expires) {
-		return e, false
+	if e := a.idem[key]; e != nil {
+		// A run still in flight holds its key however long it takes. Only a
+		// finished run's result expires.
+		select {
+		case <-e.done:
+			if time.Now().Before(e.expires) {
+				return e, false
+			}
+		default:
+			return e, false
+		}
 	}
 	e := &idemEntry{done: make(chan struct{}), expires: now().Add(10 * time.Minute)}
 	a.idem[key] = e
@@ -100,8 +109,12 @@ func (a *Agent) idemFinish(key string, e *idemEntry, res *Result, err error) {
 	e.expires = now().Add(10 * time.Minute)
 	close(e.done)
 	for k, v := range a.idem {
-		if time.Now().After(v.expires) {
-			delete(a.idem, k)
+		select {
+		case <-v.done:
+			if time.Now().After(v.expires) {
+				delete(a.idem, k)
+			}
+		default: // in flight: never evicted
 		}
 	}
 	a.idemMu.Unlock()

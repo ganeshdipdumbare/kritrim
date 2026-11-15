@@ -44,24 +44,115 @@ type memSessions struct {
 	m  map[string]*Session
 }
 
+// copySession returns a copy a caller can change freely. Nested maps and
+// slices are copied too: a hook or tool that edits ToolCall.Args must not
+// edit the stored session, and a shared map read while another run writes it
+// is a fatal error in Go, which recover cannot catch.
 func copySession(v *Session) *Session {
 	cp := *v
-	cp.Messages = append([]Message(nil), v.Messages...)
-	cp.Pending = append([]Interrupt(nil), v.Pending...)
+	cp.Messages = copyMessages(v.Messages)
+	cp.Pending = make([]Interrupt, len(v.Pending))
+	for i, in := range v.Pending {
+		cp.Pending[i] = copyInterrupt(in)
+	}
 	if v.Values != nil {
 		cp.Values = make(map[string]any, len(v.Values))
 		for k, x := range v.Values {
-			cp.Values[k] = x
+			cp.Values[k] = deepCopyAny(x)
 		}
 	}
 	if v.Paused != nil {
 		p := *v.Paused
-		p.Interrupts = append([]Interrupt(nil), v.Paused.Interrupts...)
-		p.Calls = append([]ToolCall(nil), v.Paused.Calls...)
+		p.Assistant = copyMessage(v.Paused.Assistant)
+		p.Calls = copyCalls(v.Paused.Calls)
 		p.Results = append([]ToolResult(nil), v.Paused.Results...)
+		p.Interrupts = make([]Interrupt, len(v.Paused.Interrupts))
+		for i, in := range v.Paused.Interrupts {
+			p.Interrupts[i] = copyInterrupt(in)
+		}
 		cp.Paused = &p
 	}
 	return &cp
+}
+
+func copyMessages(in []Message) []Message {
+	if in == nil {
+		return nil
+	}
+	out := make([]Message, len(in))
+	for i, m := range in {
+		out[i] = copyMessage(m)
+	}
+	return out
+}
+
+func copyMessage(m Message) Message {
+	m.ToolCalls = copyCalls(m.ToolCalls)
+	if m.Images != nil {
+		m.Images = make([]Image, len(m.Images))
+		for i, img := range m.Images {
+			img.Data = append([]byte(nil), img.Data...)
+			m.Images[i] = img
+		}
+	}
+	return m
+}
+
+func copyCalls(in []ToolCall) []ToolCall {
+	if in == nil {
+		return nil
+	}
+	out := make([]ToolCall, len(in))
+	for i, c := range in {
+		c.Args = deepCopyAny(c.Args).(map[string]any)
+		out[i] = c
+	}
+	return out
+}
+
+func copyInterrupt(in Interrupt) Interrupt {
+	if in.Args != nil {
+		in.Args = deepCopyAny(in.Args).(map[string]any)
+	}
+	return in
+}
+
+// deepCopyAny copies the maps and slices inside a JSON-like value. Other
+// values are immutable here and are returned as they are.
+func deepCopyAny(v any) any {
+	switch x := v.(type) {
+	case map[string]any:
+		if x == nil {
+			return x
+		}
+		m := make(map[string]any, len(x))
+		for k, e := range x {
+			m[k] = deepCopyAny(e)
+		}
+		return m
+	case []any:
+		if x == nil {
+			return x
+		}
+		s := make([]any, len(x))
+		for i, e := range x {
+			s[i] = deepCopyAny(e)
+		}
+		return s
+	case []string:
+		return append([]string(nil), x...)
+	case map[string]string:
+		if x == nil {
+			return x
+		}
+		m := make(map[string]string, len(x))
+		for k, e := range x {
+			m[k] = e
+		}
+		return m
+	default:
+		return v
+	}
 }
 
 func (s *memSessions) Load(ctx context.Context, id string) (*Session, error) {

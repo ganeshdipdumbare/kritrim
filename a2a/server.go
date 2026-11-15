@@ -146,6 +146,9 @@ type ServerConfig struct {
 	MaxContexts  int
 	MaxBodyBytes int64
 	MaxDuration  time.Duration
+	// MaxRunsPerPrincipal caps how many runs one principal has in flight at
+	// once. Default 8. Each run is an LLM session that costs money.
+	MaxRunsPerPrincipal int
 
 	// Push stores task webhooks. Default MemoryPush.
 	Push PushStore
@@ -171,6 +174,9 @@ type Server struct {
 	mu         sync.Mutex
 	contexts   map[string]*contextEntry
 	cancels    map[string]context.CancelFunc
+	ctxBusy    map[string]bool // principal+context with a run in flight
+	inflight   map[string]int  // principal -> runs in flight
+	taskMu     sync.Mutex      // serializes task status read-modify-write
 	pushClient *http.Client
 	fileClient *http.Client
 }
@@ -218,6 +224,9 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 	if cfg.MaxDuration <= 0 {
 		cfg.MaxDuration = 10 * time.Minute
 	}
+	if cfg.MaxRunsPerPrincipal <= 0 {
+		cfg.MaxRunsPerPrincipal = 8
+	}
 	if cfg.Card.ProtocolVersion == "" {
 		cfg.Card.ProtocolVersion = "0.3.0"
 	}
@@ -247,6 +256,7 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 	cfg.Card.Capabilities.Streaming = true
 	cfg.Card.Capabilities.PushNotifications = true
 	return &Server{cfg: cfg, contexts: map[string]*contextEntry{}, cancels: map[string]context.CancelFunc{},
+		ctxBusy: map[string]bool{}, inflight: map[string]int{},
 		pushClient: pushClient, fileClient: fileClient}, nil
 }
 
@@ -367,19 +377,38 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request, id json.RawMessage
 		return
 	}
 
-	// One run per task at a time. A second send would overwrite the first
-	// run's cancel function and interleave their history.
+	// One run per task, and one per context, at a time. A second run on
+	// either would overwrite the first's cancel function or interleave its
+	// history on one thread. Each principal also has a cap on runs in flight,
+	// since the task and context IDs are chosen by the client.
+	ctxKey := who + "\x00" + ctxID
 	s.mu.Lock()
-	if _, busy := s.cancels[taskID]; busy {
+	switch {
+	case s.cancels[taskID] != nil:
 		s.mu.Unlock()
 		s.fail(w, id, -32000, "task already has an active run")
 		return
+	case s.ctxBusy[ctxKey]:
+		s.mu.Unlock()
+		s.fail(w, id, -32000, "context already has an active run")
+		return
+	case s.inflight[who] >= s.cfg.MaxRunsPerPrincipal:
+		s.mu.Unlock()
+		s.fail(w, id, -32000, "too many concurrent runs for this principal")
+		return
 	}
 	s.cancels[taskID] = cancel
+	s.ctxBusy[ctxKey] = true
+	s.inflight[who]++
 	s.mu.Unlock()
 	defer func() {
 		s.mu.Lock()
 		delete(s.cancels, taskID)
+		delete(s.ctxBusy, ctxKey)
+		s.inflight[who]--
+		if s.inflight[who] == 0 {
+			delete(s.inflight, who)
+		}
 		s.mu.Unlock()
 	}()
 
@@ -409,6 +438,9 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request, id json.RawMessage
 		_ = s.cfg.Push.Set(ctx, taskID, *p.Configuration.PushNotificationConfig)
 	}
 	task.History = append(task.History, p.Message)
+	if n := len(task.History); n > maxTaskHistory {
+		task.History = append([]Message(nil), task.History[n-maxTaskHistory:]...)
+	}
 	task.Status = TaskStatus{State: StateWorking, Timestamp: now()}
 	// A new message starts fresh, so this is a plain Put, not save: a
 	// canceled state from an earlier run must not carry over.
@@ -450,12 +482,23 @@ func (s *Server) internal(w http.ResponseWriter, id json.RawMessage, what string
 
 // save stores the task, keeping a cancellation that tasks/cancel recorded
 // while the run was going. The run must not overwrite it with "completed".
+// The read and write happen under the task lock, so a cancel cannot land
+// between them.
 func (s *Server) save(ctx context.Context, task *Task) {
+	s.taskMu.Lock()
+	defer s.taskMu.Unlock()
 	if cur, err := s.cfg.Tasks.Get(ctx, task.ID); err == nil && cur != nil && cur.Status.State == StateCanceled {
 		task.Status = cur.Status
 	}
 	_ = s.cfg.Tasks.Put(ctx, task)
 }
+
+// Limits on what one task keeps. The client chooses how many messages it
+// sends, so the server bounds what it stores.
+const (
+	maxTaskHistory   = 200
+	maxTaskArtifacts = 50
+)
 
 func (s *Server) streamRun(ctx context.Context, w http.ResponseWriter, id json.RawMessage, agent *kritrim.Agent, prompt string, opts []kritrim.Option, task *Task) {
 	fl, ok := w.(http.Flusher)
@@ -520,6 +563,9 @@ func applyResult(task *Task, res *kritrim.Result) {
 	}
 	if res.Text != "" {
 		task.Artifacts = append(task.Artifacts, Artifact{ArtifactID: "answer", Name: "answer", Parts: []Part{TextPart(res.Text)}})
+		if n := len(task.Artifacts); n > maxTaskArtifacts {
+			task.Artifacts = append([]Artifact(nil), task.Artifacts[n-maxTaskArtifacts:]...)
+		}
 	}
 }
 
@@ -558,10 +604,20 @@ func (s *Server) taskCancel(w http.ResponseWriter, r *http.Request, id json.RawM
 	if cancel != nil {
 		cancel()
 	}
-	t.Status = TaskStatus{State: StateCanceled, Timestamp: now()}
-	_ = s.cfg.Tasks.Put(r.Context(), t)
-	s.notify(r.Context(), t)
-	s.result(w, id, t)
+	// Read and write under the task lock, on a fresh copy: a stale copy
+	// would write back old history and artifacts over the run's changes.
+	s.taskMu.Lock()
+	cur := s.ownedTask(r, p.ID)
+	if cur == nil {
+		s.taskMu.Unlock()
+		s.fail(w, id, -32001, "task not found")
+		return
+	}
+	cur.Status = TaskStatus{State: StateCanceled, Timestamp: now()}
+	_ = s.cfg.Tasks.Put(r.Context(), cur)
+	s.taskMu.Unlock()
+	s.notify(r.Context(), cur)
+	s.result(w, id, cur)
 }
 
 func (s *Server) result(w http.ResponseWriter, id json.RawMessage, v any) {

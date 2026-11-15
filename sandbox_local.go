@@ -47,6 +47,11 @@ func (m *localMachine) ExecStream(ctx context.Context, r ExecRequest, emit func(
 	if len(r.Command) == 0 {
 		return ExecResult{}, fmt.Errorf("kritrim: empty command")
 	}
+	if r.Allow != nil {
+		if err := checkCommand(execRequest{Command: r.Command, Allow: r.Allow}); err != nil {
+			return ExecResult{}, err
+		}
+	}
 	cmd := exec.CommandContext(ctx, r.Command[0], r.Command[1:]...)
 	cmd.Dir, cmd.Env = r.Dir, childEnv(r.Env)
 	if r.Stdin != nil {
@@ -97,6 +102,11 @@ func (m *localMachine) ExecStream(ctx context.Context, r ExecRequest, emit func(
 func (m *localMachine) Start(ctx context.Context, r StartRequest) (Process, error) {
 	if len(r.Command) == 0 {
 		return nil, fmt.Errorf("kritrim: empty command")
+	}
+	if r.Allow != nil {
+		if err := checkCommand(execRequest{Command: r.Command, Allow: r.Allow}); err != nil {
+			return nil, err
+		}
 	}
 	cmd := exec.Command(r.Command[0], r.Command[1:]...)
 	cmd.Dir, cmd.Env = r.Dir, childEnv(r.Env)

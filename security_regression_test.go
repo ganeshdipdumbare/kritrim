@@ -188,3 +188,97 @@ func TestAuditSinksShareOneChain(t *testing.T) {
 		t.Fatalf("interleaved sinks broke the chain: %v", err)
 	}
 }
+
+// The host's policy hooks run on a call the box makes. Before, a bridged call
+// skipped them, so a Deny rule never applied to the box.
+func TestBridgedCallRunsHostHooks(t *testing.T) {
+	var ran atomic.Int32
+	echo := NewTool("echo", "echo", func(ctx context.Context, in struct{}) (string, error) {
+		ran.Add(1)
+		return "ok", nil
+	})
+	cfg := Config{Tools: []Tool{echo}, Hooks: Hooks{BeforeTool: func(ctx context.Context, e *ToolEvent) error {
+		e.Deny = "policy forbids echo"
+		return nil
+	}}}
+	b := testBoxHost(t, cfg, Sealed{Bridged: []string{"echo"}})
+	b.cur = &activeRun{ctx: context.Background(), grants: map[string]grant{}}
+	raw, _ := json.Marshal(map[string]any{"name": "echo", "args": map[string]any{}})
+	if _, err := b.tool(context.Background(), raw); err == nil {
+		t.Fatal("a bridged call the host hook denied was run")
+	}
+	if ran.Load() != 0 {
+		t.Fatal("tool ran despite the Deny rule")
+	}
+}
+
+// A hook may not change the arguments of a bridged call the host is serving.
+func TestBridgedCallArgumentsAreFixedByHooks(t *testing.T) {
+	var got atomic.Value
+	echo := NewTool("echo", "echo", func(ctx context.Context, in struct {
+		Amount int `json:"amount"`
+	}) (string, error) {
+		got.Store(in.Amount)
+		return "ok", nil
+	})
+	cfg := Config{Tools: []Tool{echo}, Hooks: Hooks{BeforeTool: func(ctx context.Context, e *ToolEvent) error {
+		e.Args["amount"] = 1000000
+		return nil
+	}}}
+	b := testBoxHost(t, cfg, Sealed{Bridged: []string{"echo"}})
+	b.cur = &activeRun{ctx: context.Background(), grants: map[string]grant{}}
+	raw, _ := json.Marshal(map[string]any{"name": "echo", "args": map[string]any{"amount": 5}})
+	if _, err := b.tool(context.Background(), raw); err == nil {
+		t.Fatal("a hook widened the arguments of a bridged call")
+	}
+	if got.Load() != nil {
+		t.Fatalf("tool ran with %v", got.Load())
+	}
+}
+
+// A caller that edits what Load returned must not change the stored session.
+func TestMemorySessionsDoNotAliasNestedData(t *testing.T) {
+	ctx := context.Background()
+	store := MemorySessions()
+	s := &Session{ID: "t", Messages: []Message{{Role: RoleAssistant, ToolCalls: []ToolCall{
+		{ID: "c", Name: "x", Args: map[string]any{"k": "v"}}}}}}
+	if err := store.Save(ctx, s); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := store.Load(ctx, "t")
+	got.Messages[0].ToolCalls[0].Args["k"] = "changed"
+	again, _ := store.Load(ctx, "t")
+	if again.Messages[0].ToolCalls[0].Args["k"] != "v" {
+		t.Fatal("editing a loaded session changed the stored one")
+	}
+}
+
+// Docker reads its own configuration from DOCKER_* variables. A sandbox value
+// must not be able to set them.
+func TestDockerClientVariablesAreReserved(t *testing.T) {
+	if err := checkEnv([]string{"DOCKER_HOST=tcp://evil:2375"}); err == nil {
+		t.Fatal("DOCKER_HOST accepted as a sandbox env value")
+	}
+	if err := checkEnv([]string{"APP_TOKEN=x"}); err != nil {
+		t.Fatalf("ordinary variable refused: %v", err)
+	}
+}
+
+// A field the writer accepts must fit the reader's line limit, so one large
+// argument cannot fail the audit log permanently.
+func TestAuditAcceptsOversizedDetailAndStaysVerifiable(t *testing.T) {
+	ctx := context.Background()
+	key := []byte("0123456789abcdef0123456789abcdef")
+	path := filepath.Join(t.TempDir(), "big.log")
+	s := AuditFile(path, AuditKey(key))
+	big := strings.Repeat("x", 3<<20)
+	if err := s.Write(ctx, Entry{Kind: "tool", Detail: big}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Write(ctx, Entry{Kind: "tool", Detail: "after"}); err != nil {
+		t.Fatalf("log stopped accepting entries: %v", err)
+	}
+	if err := VerifyAudit(path, AuditKey(key)); err != nil {
+		t.Fatalf("log does not verify: %v", err)
+	}
+}

@@ -288,6 +288,7 @@ func TestSealedAuditEntriesAreMarked(t *testing.T) {
 
 func TestSealedSecretPlaceholderIsRandom(t *testing.T) {
 	b := testBoxHost(t, Config{Secrets: map[string]string{"TOKEN": "abcd1234"}}, Sealed{Secrets: map[string][]string{"TOKEN": {"api.example.com"}}})
+	b.cur = &activeRun{ctx: context.Background()}
 	raw, _ := json.Marshal(map[string]string{"name": "TOKEN"})
 	ph1, err := b.secret(context.Background(), raw)
 	if err != nil {
@@ -295,6 +296,7 @@ func TestSealedSecretPlaceholderIsRandom(t *testing.T) {
 	}
 	ph2, _ := b.secret(context.Background(), raw)
 	b2 := testBoxHost(t, Config{Secrets: map[string]string{"TOKEN": "abcd1234"}}, Sealed{Secrets: map[string][]string{"TOKEN": {"api.example.com"}}})
+	b2.cur = &activeRun{ctx: context.Background()}
 	ph3, _ := b2.secret(context.Background(), raw)
 	if ph1 != ph2 || ph1 == ph3 {
 		t.Fatalf("placeholders %v %v %v: want stable per host, different across hosts", ph1, ph2, ph3)

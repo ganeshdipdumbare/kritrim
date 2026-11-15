@@ -2,10 +2,13 @@
 
 package main
 
-import "net"
+import (
+	"errors"
+	"net"
+)
 
-// listenUnixPrivate is plain Listen where unix sockets are not private by
-// default. Those hosts do not run this guest agent.
+// listenUnixPrivate fails closed: a socket here cannot be made owner-only, and
+// the agent serves commands without authenticating the peer.
 func listenUnixPrivate(path string) (net.Listener, error) {
-	return net.Listen("unix", path)
+	return nil, errors.New("private unix sockets are not supported on this platform; use vsock")
 }

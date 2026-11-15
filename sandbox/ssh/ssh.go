@@ -42,6 +42,10 @@ func New(cfg Config) (kritrim.Sandbox, error) {
 	if cfg.Host == "" || strings.ContainsAny(cfg.Host, " \t;|&") {
 		return nil, errors.New("ssh: Host is required and must not contain shell characters")
 	}
+	// A leading "-" makes ssh read the value as an option.
+	if strings.HasPrefix(cfg.Host, "-") || strings.HasPrefix(cfg.IdentityFile, "-") {
+		return nil, errors.New("ssh: Host and IdentityFile must not start with '-'")
+	}
 	if cfg.WorkingDir == "" {
 		return nil, errors.New("ssh: WorkingDir is required")
 	}

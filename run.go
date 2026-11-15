@@ -74,7 +74,10 @@ func (a *Agent) run(ctx context.Context, prompt string, emit func(Event), opts .
 		return nil, errors.New("kritrim: Output needs a pointer")
 	}
 	if o.idemKey != "" {
-		e, leader := a.idemBegin(o.idemKey)
+		// The key is scoped to the caller's identity and thread, so one
+		// caller's key can never hand back another caller's Result.
+		key := o.user + "\x00" + o.thread + "\x00" + o.idemKey
+		e, leader := a.idemBegin(key)
 		if !leader {
 			select {
 			case <-e.done:
@@ -83,7 +86,7 @@ func (a *Agent) run(ctx context.Context, prompt string, emit func(Event), opts .
 				return nil, ctx.Err()
 			}
 		}
-		defer func() { a.idemFinish(o.idemKey, e, res, err) }()
+		defer func() { a.idemFinish(key, e, res, err) }()
 	}
 
 	runID := o.runID
@@ -211,11 +214,22 @@ func (a *Agent) loop(ctx context.Context, sess *Session, msgs []Message, ps *Pau
 			}
 			ps.Results = append(ps.Results, res)
 			msgs = append(msgs, toolMessage(call, res))
+			// Checkpoint after each call: if the run fails later, a retry
+			// resumes after the calls that already ran, not before them.
+			ps.Index = i + 1
+			sess.Paused = ps
+			sess.Pending = withoutInterrupt(sess.Pending, call.ID)
+			if err := a.saveSession(ctx, sess, msgs, o); err != nil {
+				return nil, err
+			}
 			r := res
 			emit(Event{Type: EventToolResult, ToolResult: &r, Step: 0})
 		}
 		steps = append(steps, Step{Text: ps.Assistant.Content, ToolCalls: ps.Calls, ToolResults: ps.Results})
 		sess.Pending, sess.Paused = nil, nil
+		if err := a.saveSession(ctx, sess, msgs, o); err != nil {
+			return nil, err
+		}
 	}
 
 	toolCalls := 0
@@ -315,6 +329,11 @@ func (a *Agent) loop(ctx context.Context, sess *Session, msgs []Message, ps *Pau
 				res := results[i]
 				stepRec.ToolResults = append(stepRec.ToolResults, res)
 				msgs = append(msgs, toolMessage(call, res))
+				// Checkpoint each result, so a failed run never re-runs a call
+				// that already has its result in the history.
+				if err := a.saveSession(ctx, sess, msgs, o); err != nil {
+					return nil, err
+				}
 				r := res
 				emit(Event{Type: EventToolResult, ToolResult: &r, Step: step})
 			}
@@ -329,6 +348,11 @@ func (a *Agent) loop(ctx context.Context, sess *Session, msgs []Message, ps *Pau
 				}
 				stepRec.ToolResults = append(stepRec.ToolResults, res)
 				msgs = append(msgs, toolMessage(call, res))
+				// Checkpoint each result, so a failed run never re-runs a call
+				// that already has its result in the history.
+				if err := a.saveSession(ctx, sess, msgs, o); err != nil {
+					return nil, err
+				}
 				r := res
 				emit(Event{Type: EventToolResult, ToolResult: &r, Step: step})
 			}
@@ -532,6 +556,7 @@ func (a *Agent) execute(ctx context.Context, o runOptions, call ToolCall, emit f
 	}
 
 	te := &ToolEvent{Call: &call, Args: call.Args}
+	approvedArgs := canonicalArgs(call.Args)
 	if a.cfg.Hooks.BeforeTool != nil {
 		if err := a.cfg.Hooks.BeforeTool(ctx, te); err != nil {
 			return ToolResult{CallID: call.ID, Name: tool.Name, Content: "blocked: " + err.Error(), IsError: true}, nil
@@ -552,6 +577,11 @@ func (a *Agent) execute(ctx context.Context, o runOptions, call ToolCall, emit f
 		}
 	}
 
+	// A risky call runs with the arguments that were approved. A hook that
+	// changed them, in place or by replacement, stops the call here.
+	if tool.risky() && canonicalArgs(call.Args) != approvedArgs {
+		return ToolResult{CallID: call.ID, Name: tool.Name, Content: "blocked: a hook changed the arguments of a call that needs approval", IsError: true}, nil
+	}
 	if err := tool.checkArgs(call.Args); err != nil {
 		return ToolResult{CallID: call.ID, Name: tool.Name, Content: "error: " + err.Error(), IsError: true}, nil
 	}
@@ -640,6 +670,17 @@ func (a *Agent) models(o runOptions) []Model {
 	for _, m := range a.cfg.Fallback {
 		if m != nil {
 			out = append(out, m)
+		}
+	}
+	return out
+}
+
+// withoutInterrupt drops the interrupt for a call that has now run.
+func withoutInterrupt(in []Interrupt, callID string) []Interrupt {
+	out := in[:0:0]
+	for _, x := range in {
+		if x.CallID != callID {
+			out = append(out, x)
 		}
 	}
 	return out

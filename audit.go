@@ -81,9 +81,24 @@ type fileAudit struct {
 	loaded bool  // seq and prev reflect the file on disk
 }
 
+// maxAuditField caps a single entry field. The reader parses a line with a
+// 4 MiB limit, so an entry the writer accepted must always fit it.
+// Four capped fields at 512 KiB each stay under the reader limit with room
+// for the rest of the entry.
+const maxAuditField = 512 << 10
+
+func capField(s string) string {
+	if len(s) > maxAuditField {
+		return s[:maxAuditField] + "...[truncated]"
+	}
+	return s
+}
+
 func (a *fileAudit) Write(ctx context.Context, e Entry) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	e.Name, e.Detail = capField(e.Name), capField(e.Detail)
+	e.Thread, e.User = capField(e.Thread), capField(e.User)
 	if a.key != nil && len(a.key) < 32 {
 		return errAuditKey
 	}

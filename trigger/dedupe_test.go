@@ -308,3 +308,23 @@ func TestMemoryDedupeTakesOverExpiredClaim(t *testing.T) {
 		t.Fatalf("expired unfinished claim was not taken over: %+v %v", c, err)
 	}
 }
+
+// A leader whose claim expired must not release the claim a newer leader
+// now holds. Before the fence, its deferred Release deleted it.
+func TestStaleLeaderCannotReleaseNewerClaim(t *testing.T) {
+	ctx := context.Background()
+	s := MemoryDedupe(10)
+	oldExp := time.Now().Add(-time.Second)
+	if c, _ := s.Claim(ctx, "d", "p", oldExp); !c.Won {
+		t.Fatal("first claim not won")
+	}
+	newExp := time.Now().Add(time.Hour)
+	if c, _ := s.Claim(ctx, "d", "p", newExp); !c.Won {
+		t.Fatal("takeover not won")
+	}
+	// The old leader finishes late and releases with its own fence.
+	_ = s.Release(withFence(ctx, oldExp), "d")
+	if c, _ := s.Claim(ctx, "d", "p", time.Now().Add(time.Hour)); c.Won {
+		t.Fatal("a stale leader's release freed the live claim")
+	}
+}

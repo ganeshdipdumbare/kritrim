@@ -57,6 +57,36 @@ from v1.0.0 on; see [docs/API.md](docs/API.md) for what the promise covers and
 - **vmagent unix socket** is owner-only, and a live socket is not unlinked.
 - **CI** pins its actions to commit SHAs and its Go tools to versions.
 
+- **Sealed boxes run the host's hooks on bridged calls.** Policy hooks (authz,
+  guard) see a call the box makes. A hook may deny it but may not change its
+  arguments. Approval requests are capped at 20 per run, their text is
+  sanitized, and the `secret` RPC needs an active run.
+- **A risky call that a hook changes after approval is blocked**, in place or
+  by replacement.
+- **Runs checkpoint as they go.** The session is saved after each tool result,
+  so a retry after a failure does not run calls that already ran.
+- **Idempotency keys are scoped to the caller's identity and thread**, and an
+  in-flight run's key never expires.
+- **MemorySessions copies nested data.** Editing a loaded session no longer
+  edits the stored one.
+- **Audit fields are capped at 512 KiB**, so the writer never accepts an entry
+  the reader cannot parse.
+- **Dedupe release and complete are fenced by the claim's expiry**, so a stale
+  leader cannot delete a newer claim. `DedupeTTL` is at least
+  `RunTimeout + 2*Tolerance`.
+- **A2A**: one run per context as well as per task; a per-principal cap on runs
+  in flight (`ServerConfig.MaxRunsPerPrincipal`, default 8); task updates are
+  serialized; history and artifacts are capped per task.
+- **vmagent**: replies and reads are capped, a timeout kills the whole process
+  group, a panic ends only its connection, `start` checks its pipes, and only
+  the host CID may connect over vsock. Accept errors are retried, and the
+  non-unix listener fails closed.
+- **Local sandbox**: `ExecStream` and `Start` enforce `Allow` (`StartRequest`
+  gained an `Allow` field).
+- **Docker** refuses `DOCKER_*` names in sandbox env. **SSH** refuses a Host or
+  IdentityFile that starts with `-`.
+- **kritrim-evals** kills a case's whole process group on timeout.
+
 ### Added
 
 - `ExecRequest.Allow`: when set, the Local machine refuses commands outside it.
@@ -70,6 +100,10 @@ from v1.0.0 on; see [docs/API.md](docs/API.md) for what the promise covers and
 - Commands are matched by name on the host PATH. Pin absolute paths in the
   allowlist to avoid a PATH substitution.
 - Docker `Start` is long-lived, so `ExecRequest.Timeout` does not bound it.
+- A direct `Machine` caller that passes no `Allow` is unrestricted on the Local
+  machine. The agent always sets `Allow`. Other machines ignore it.
+- vmagent authenticates the peer by CID only. A boot-time secret is not yet
+  provisioned by the host.
 
 ## v1.0.0 — 2026-11-14
 
