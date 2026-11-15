@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 	"sync"
@@ -177,6 +178,8 @@ type Server struct {
 type contextEntry struct {
 	agent *kritrim.Agent
 	used  time.Time
+	who   string
+	busy  int // runs in flight; a busy entry is never evicted
 }
 
 // NewServer validates the configuration.
@@ -331,7 +334,13 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request, id json.RawMessage
 		taskID = newID()
 	}
 	who := s.principal(r)
-	if existing, err := s.cfg.Tasks.Get(r.Context(), taskID); err == nil && existing != nil && existing.Owner != who {
+	// Fail closed: a store error is not a reason to skip the owner check.
+	existing, err := s.cfg.Tasks.Get(r.Context(), taskID)
+	if err != nil {
+		s.internal(w, id, "task lookup", err)
+		return
+	}
+	if existing != nil && existing.Owner != who {
 		s.fail(w, id, -32001, "task not found")
 		return
 	}
@@ -341,22 +350,11 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request, id json.RawMessage
 			return
 		}
 	}
-	agent, err := s.agent(who, ctxID)
-	if err != nil {
-		s.fail(w, id, -32603, err.Error())
-		return
-	}
 	ctx, cancel := context.WithTimeout(r.Context(), s.cfg.MaxDuration)
 	defer cancel()
-	s.mu.Lock()
-	s.cancels[taskID] = cancel
-	s.mu.Unlock()
-	defer func() {
-		s.mu.Lock()
-		delete(s.cancels, taskID)
-		s.mu.Unlock()
-	}()
 
+	// Validate the message before allocating anything: a refused request
+	// must not create an agent or touch the context cache.
 	decisions := decisionsFrom(p.Message)
 	files, images, err := s.inputFiles(ctx, p.Message)
 	if err != nil {
@@ -369,7 +367,41 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request, id json.RawMessage
 		return
 	}
 
-	task, _ := s.cfg.Tasks.Get(ctx, taskID)
+	// One run per task at a time. A second send would overwrite the first
+	// run's cancel function and interleave their history.
+	s.mu.Lock()
+	if _, busy := s.cancels[taskID]; busy {
+		s.mu.Unlock()
+		s.fail(w, id, -32000, "task already has an active run")
+		return
+	}
+	s.cancels[taskID] = cancel
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		delete(s.cancels, taskID)
+		s.mu.Unlock()
+	}()
+
+	agent, release, err := s.agent(who, ctxID)
+	if err != nil {
+		s.internal(w, id, "agent", err)
+		return
+	}
+	defer release()
+
+	// Ownership is checked again on the record this request changes. The
+	// lookup above can be stale, and a failed lookup must never look like a
+	// new task that replaces someone else's.
+	task, err := s.cfg.Tasks.Get(ctx, taskID)
+	if err != nil {
+		s.internal(w, id, "task lookup", err)
+		return
+	}
+	if task != nil && task.Owner != who {
+		s.fail(w, id, -32001, "task not found")
+		return
+	}
 	if task == nil {
 		task = &Task{ID: taskID, ContextID: ctxID, Owner: who, Status: TaskStatus{State: StateSubmitted, Timestamp: now()}}
 	}
@@ -378,6 +410,8 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request, id json.RawMessage
 	}
 	task.History = append(task.History, p.Message)
 	task.Status = TaskStatus{State: StateWorking, Timestamp: now()}
+	// A new message starts fresh, so this is a plain Put, not save: a
+	// canceled state from an earlier run must not carry over.
 	_ = s.cfg.Tasks.Put(ctx, task)
 	s.notify(ctx, task)
 
@@ -396,14 +430,31 @@ func (s *Server) send(w http.ResponseWriter, r *http.Request, id json.RawMessage
 	res, err := agent.Run(ctx, prompt, opts...)
 	if err != nil {
 		task.Status = TaskStatus{State: StateFailed, Timestamp: now()}
-		_ = s.cfg.Tasks.Put(ctx, task)
-		s.fail(w, id, -32603, err.Error())
+		s.save(context.Background(), task)
+		s.internal(w, id, "run "+taskID, err)
 		return
 	}
 	applyResult(task, res)
-	_ = s.cfg.Tasks.Put(context.Background(), task)
+	s.save(context.Background(), task)
 	s.notify(context.Background(), task)
 	s.result(w, id, task)
+}
+
+// internal logs the detail and tells the client only that something failed.
+// Errors from the agent factory and the store can name hosts, paths and
+// connection strings, so they stay on the server.
+func (s *Server) internal(w http.ResponseWriter, id json.RawMessage, what string, err error) {
+	log.Printf("a2a: %s: %v", what, err)
+	s.fail(w, id, -32603, "internal error")
+}
+
+// save stores the task, keeping a cancellation that tasks/cancel recorded
+// while the run was going. The run must not overwrite it with "completed".
+func (s *Server) save(ctx context.Context, task *Task) {
+	if cur, err := s.cfg.Tasks.Get(ctx, task.ID); err == nil && cur != nil && cur.Status.State == StateCanceled {
+		task.Status = cur.Status
+	}
+	_ = s.cfg.Tasks.Put(ctx, task)
 }
 
 func (s *Server) streamRun(ctx context.Context, w http.ResponseWriter, id json.RawMessage, agent *kritrim.Agent, prompt string, opts []kritrim.Option, task *Task) {
@@ -434,13 +485,14 @@ func (s *Server) streamRun(ctx context.Context, w http.ResponseWriter, id json.R
 	res, err := agent.Run(ctx, prompt, opts...)
 	if err != nil {
 		task.Status = TaskStatus{State: StateFailed, Timestamp: now()}
-		_ = s.cfg.Tasks.Put(context.Background(), task)
+		s.save(context.Background(), task)
+		log.Printf("a2a: run %s: %v", task.ID, err)
 		writeEvent(map[string]any{"kind": "status-update", "taskId": task.ID, "contextId": task.ContextID,
-			"status": map[string]any{"state": StateFailed, "message": map[string]any{"role": "agent", "parts": []Part{TextPart(err.Error())}}}, "final": true})
+			"status": map[string]any{"state": StateFailed, "message": map[string]any{"role": "agent", "parts": []Part{TextPart("agent run failed")}}}, "final": true})
 		return
 	}
 	applyResult(task, res)
-	_ = s.cfg.Tasks.Put(context.Background(), task)
+	s.save(context.Background(), task)
 	s.notify(context.Background(), task)
 	final := map[string]any{"kind": "status-update", "taskId": task.ID, "contextId": task.ContextID,
 		"status": map[string]any{"state": task.Status.State}, "final": true}
@@ -549,19 +601,23 @@ func threadID(who, ctxID string) string {
 	return who + ":" + ctxID
 }
 
-func (s *Server) agent(who, ctxID string) (*kritrim.Agent, error) {
+// agent returns the cached agent for this principal's context. The agent
+// stays busy until release is called, so no other request can evict or
+// close it mid-run.
+func (s *Server) agent(who, ctxID string) (*kritrim.Agent, func(), error) {
 	key := who + "\x00" + ctxID
 	s.mu.Lock()
 	if e := s.contexts[key]; e != nil {
 		e.used = time.Now()
+		e.busy++
 		s.mu.Unlock()
-		return e.agent, nil
+		return e.agent, s.releaser(e), nil
 	}
 	s.mu.Unlock()
 
 	a, err := s.cfg.Agent(ctxID)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	s.mu.Lock()
@@ -569,23 +625,38 @@ func (s *Server) agent(who, ctxID string) (*kritrim.Agent, error) {
 	if e := s.contexts[key]; e != nil {
 		_ = a.Close() // another request won the race
 		e.used = time.Now()
-		return e.agent, nil
+		e.busy++
+		return e.agent, s.releaser(e), nil
 	}
 	if len(s.contexts) >= s.cfg.MaxContexts {
+		// At the cap, a principal may only evict its own idle contexts.
+		// Evicting another principal's context would close their agent.
 		var oldestID string
 		var oldest time.Time
 		for id, e := range s.contexts {
-			if oldestID == "" || e.used.Before(oldest) {
+			if e.who == who && e.busy == 0 && (oldestID == "" || e.used.Before(oldest)) {
 				oldestID, oldest = id, e.used
 			}
 		}
-		if oldestID != "" {
-			_ = s.contexts[oldestID].agent.Close()
-			delete(s.contexts, oldestID)
+		if oldestID == "" {
+			_ = a.Close()
+			return nil, nil, errors.New("too many active contexts")
 		}
+		_ = s.contexts[oldestID].agent.Close()
+		delete(s.contexts, oldestID)
 	}
-	s.contexts[key] = &contextEntry{agent: a, used: time.Now()}
-	return a, nil
+	e := &contextEntry{agent: a, used: time.Now(), who: who, busy: 1}
+	s.contexts[key] = e
+	return a, s.releaser(e), nil
+}
+
+// releaser returns the func that marks a context idle again.
+func (s *Server) releaser(e *contextEntry) func() {
+	return func() {
+		s.mu.Lock()
+		e.busy--
+		s.mu.Unlock()
+	}
 }
 
 func decisionsFrom(msg Message) map[string]kritrim.Decision {
