@@ -162,7 +162,8 @@ type Agent struct {
 	idemMu sync.Mutex
 	idem   map[string]*idemEntry
 
-	auditMu sync.Mutex
+	auditMu  sync.Mutex
+	auditErr error // first audit write that failed; a broken log stops the agent
 }
 
 type idemEntry struct {

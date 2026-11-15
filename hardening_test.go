@@ -420,14 +420,27 @@ func TestAuditSinkRecoversAfterFailure(t *testing.T) {
 	path := filepath.Join(dir, "a.log")
 	sink := AuditFile(path, AuditKey(key))
 	_ = sink.Write(ctx, Entry{Kind: "x"})
-	// Make the head unwritable so the next write fails after appending.
-	if err := os.Mkdir(path+".head.tmp", 0o700); err != nil {
+	// Make the head unwritable so the next write fails after appending: a
+	// directory at the head's path cannot be replaced by the rename.
+	head, err := os.ReadFile(path + ".head")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(path + ".head"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(path+".head", 0o700); err != nil {
 		t.Fatal(err)
 	}
 	if err := sink.Write(ctx, Entry{Kind: "y"}); err == nil {
 		t.Fatal("expected head write failure")
 	}
-	_ = os.Remove(path + ".head.tmp")
+	if err := os.Remove(path + ".head"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path+".head", head, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	if err := sink.Write(ctx, Entry{Kind: "z"}); err != nil {
 		t.Fatalf("sink did not recover: %v", err)
 	}

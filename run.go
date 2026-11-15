@@ -180,6 +180,9 @@ func (a *Agent) interruptResult(sess *Session, o runOptions) *Result {
 }
 
 func (a *Agent) loop(ctx context.Context, sess *Session, msgs []Message, ps *PausedStep, o runOptions, emit func(Event)) (*Result, error) {
+	if err := a.auditGate(); err != nil {
+		return nil, err
+	}
 	schema, wrapped, err := outputSchema(o.output)
 	if err != nil {
 		return nil, err
@@ -211,6 +214,9 @@ func (a *Agent) loop(ctx context.Context, sess *Session, msgs []Message, ps *Pau
 
 	toolCalls := 0
 	for step := 0; ; step++ {
+		if err := a.auditGate(); err != nil {
+			return nil, err
+		}
 		if reason := o.end.get(); reason != "" {
 			stop = a.endByHook(ctx, o, reason)
 			break
@@ -657,7 +663,24 @@ func (a *Agent) audit(ctx context.Context, o runOptions, kind, name, detail stri
 	a.auditMu.Unlock()
 	if err != nil {
 		logf(a.cfg, "audit: %v", err)
+		a.auditMu.Lock()
+		if a.auditErr == nil {
+			a.auditErr = err
+		}
+		a.auditMu.Unlock()
 	}
+}
+
+// auditGate stops the run once the audit log has failed. An action that
+// cannot be recorded must not happen, and a log that stops taking entries
+// cannot prove what the agent did.
+func (a *Agent) auditGate() error {
+	a.auditMu.Lock()
+	defer a.auditMu.Unlock()
+	if a.auditErr != nil {
+		return fmt.Errorf("kritrim: audit log failed, run stopped: %w", a.auditErr)
+	}
+	return nil
 }
 
 func (a *Agent) auditModel(ctx context.Context, o runOptions, total Usage, resp *Response) {

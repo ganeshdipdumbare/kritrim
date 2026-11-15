@@ -48,6 +48,7 @@ func TestBoxRunOverRPC(t *testing.T) {
 
 	host := newPeer(hostSide, hostSide)
 	host.handle("ping", func(context.Context, json.RawMessage) (any, error) { return map[string]bool{"ok": true}, nil })
+	host.handle("audit", func(context.Context, json.RawMessage) (any, error) { return nil, nil })
 	host.handle("event", func(_ context.Context, raw json.RawMessage) (any, error) {
 		mu.Lock()
 		events++
@@ -103,6 +104,7 @@ func TestSealedBridgedTool(t *testing.T) {
 
 	host := newPeer(hostSide, hostSide)
 	host.handle("ping", func(context.Context, json.RawMessage) (any, error) { return map[string]bool{"ok": true}, nil })
+	host.handle("audit", func(context.Context, json.RawMessage) (any, error) { return nil, nil })
 	n := 0
 	host.handle("model", func(context.Context, json.RawMessage) (any, error) {
 		n++
