@@ -121,6 +121,24 @@ func (s *fileSessions) Load(ctx context.Context, id string) (*Session, error) {
 }
 
 func (s *fileSessions) Save(ctx context.Context, v *Session) error {
+	if err := os.MkdirAll(s.dir, 0o700); err != nil {
+		return err
+	}
+	// The lock covers the version check through the rename, so two writers
+	// cannot both pass the check on the same version. It is taken on the
+	// directory, which excludes other goroutines and processes and creates no
+	// extra files. Saves to one directory are serialized, which is brief.
+	dirLock, err := os.Open(s.dir)
+	if err != nil {
+		return err
+	}
+	defer dirLock.Close()
+	unlock, err := lockFile(dirLock)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+
 	cur, err := s.Load(ctx, idOf(v.ID))
 	if err != nil {
 		return err
@@ -137,18 +155,28 @@ func (s *fileSessions) Save(ctx context.Context, v *Session) error {
 		v.Version = cur.Version + 1
 	}
 	v.Updated = now()
-	if err := os.MkdirAll(s.dir, 0o700); err != nil {
-		return err
-	}
 	b, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
 		return err
 	}
-	tmp := s.path(idOf(v.ID)) + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+	// A unique temp file per write, so writers never share one.
+	tmp, err := os.CreateTemp(s.dir, filepath.Base(s.path(idOf(v.ID)))+".*.tmp")
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, s.path(idOf(v.ID)))
+	defer os.Remove(tmp.Name()) // no-op once renamed
+	if _, err := tmp.Write(b); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), s.path(idOf(v.ID)))
 }
 
 func idOf(id string) string {

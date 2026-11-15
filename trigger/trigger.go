@@ -34,6 +34,10 @@ type WebhookConfig struct {
 	MaxBody int64
 	// Tolerance is how far X-Kritrim-Timestamp may be from now. Default 5m.
 	Tolerance time.Duration
+	// RunTimeout bounds one delivery's agent run. A run that hangs past it
+	// fails and releases its claim, so duplicates are not held forever.
+	// Default 10 minutes.
+	RunTimeout time.Duration
 	// DedupeTTL is how long a delivery is remembered. Default 24h; it is
 	// never shorter than twice Tolerance.
 	DedupeTTL time.Duration
@@ -94,6 +98,9 @@ func Webhook(cfg WebhookConfig) (http.Handler, error) {
 	if cfg.Tolerance <= 0 {
 		cfg.Tolerance = 5 * time.Minute
 	}
+	if cfg.RunTimeout <= 0 {
+		cfg.RunTimeout = 10 * time.Minute
+	}
 	if cfg.DedupeTTL <= 0 {
 		cfg.DedupeTTL = 24 * time.Hour
 	}
@@ -131,7 +138,14 @@ func (h *webhook) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, h.cfg.MaxBody)
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		http.Error(w, "body too large", http.StatusRequestEntityTooLarge)
+		// Only an over-size body is a 413. A failed read is the sender's
+		// problem or the network's, and is not permanent for the payload.
+		var big *http.MaxBytesError
+		if errors.As(err, &big) {
+			http.Error(w, "body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
+		http.Error(w, "could not read body", http.StatusBadRequest)
 		return
 	}
 	ts := r.Header.Get(TimestampHeader)
@@ -194,7 +208,8 @@ func (h *webhook) run(w http.ResponseWriter, r *http.Request, id string, body []
 	h.mu.Unlock()
 	// The run is not tied to this connection: a sender that times out and
 	// retries gets the same result instead of a second run.
-	ctx := context.WithoutCancel(r.Context())
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), h.cfg.RunTimeout)
+	defer cancel()
 	finished := false
 	defer func() {
 		if !finished {

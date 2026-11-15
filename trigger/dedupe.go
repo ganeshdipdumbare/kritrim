@@ -73,7 +73,9 @@ func (s *memDedupe) Claim(ctx context.Context, id, print string, expires time.Ti
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := time.Now()
-	if r, ok := s.m[id]; ok && (now.Before(r.expires) || !r.done) {
+	// A claim is live until it expires. An expired one that never finished
+	// (its leader hung or died) is taken over, as the SQL store does.
+	if r, ok := s.m[id]; ok && now.Before(r.expires) {
 		if r.print != print {
 			return Claim{}, ErrConflict
 		}
@@ -81,7 +83,7 @@ func (s *memDedupe) Claim(ctx context.Context, id, print string, expires time.Ti
 	}
 	if len(s.m) >= s.max {
 		for k, r := range s.m {
-			if r.done && now.After(r.expires) {
+			if now.After(r.expires) {
 				delete(s.m, k)
 			}
 		}

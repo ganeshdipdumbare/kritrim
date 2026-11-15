@@ -7,9 +7,10 @@ import (
 	"syscall"
 )
 
-// lockLog takes an exclusive advisory lock on the audit log. The returned
+// lockFile takes an exclusive advisory lock on f. The lock is held per open
+// file, so it also excludes other goroutines that open the file. The returned
 // func releases it.
-func lockLog(f *os.File) (func(), error) {
+func lockFile(f *os.File) (func(), error) {
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
 		return nil, err
 	}

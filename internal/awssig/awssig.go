@@ -7,7 +7,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"sort"
 	"strings"
@@ -80,13 +82,13 @@ func signAt(req *http.Request, body []byte, service string, c Credentials, now t
 	sort.Strings(keys)
 	var canonicalHeaders strings.Builder
 	for _, k := range keys {
-		canonicalHeaders.WriteString(k + ":" + strings.TrimSpace(headers[k]) + "\n")
+		canonicalHeaders.WriteString(k + ":" + strings.Join(strings.Fields(headers[k]), " ") + "\n")
 	}
 	signed := strings.Join(keys, ";")
 	canonical := strings.Join([]string{
 		req.Method,
 		req.URL.EscapedPath(),
-		req.URL.Query().Encode(),
+		canonicalQuery(req.URL.RawQuery),
 		canonicalHeaders.String(),
 		signed,
 		payloadHash,
@@ -112,4 +114,53 @@ func hmacSHA256(key []byte, s string) []byte {
 	mac := hmac.New(sha256.New, key)
 	mac.Write([]byte(s))
 	return mac.Sum(nil)
+}
+
+// canonicalQuery is the SigV4 canonical query string: each key and value is
+// percent-encoded with RFC 3986 rules (a space is %20, never "+"), pairs are
+// sorted by key then value, and repeated keys are all kept. url.Values.Encode
+// gets all three wrong for signing.
+func canonicalQuery(raw string) string {
+	type pair struct{ k, v string }
+	var pairs []pair
+	for _, part := range strings.Split(raw, "&") {
+		if part == "" {
+			continue
+		}
+		k, v, _ := strings.Cut(part, "=")
+		if uk, err := url.QueryUnescape(k); err == nil {
+			k = uk
+		}
+		if uv, err := url.QueryUnescape(v); err == nil {
+			v = uv
+		}
+		pairs = append(pairs, pair{awsEscape(k), awsEscape(v)})
+	}
+	sort.Slice(pairs, func(i, j int) bool {
+		if pairs[i].k != pairs[j].k {
+			return pairs[i].k < pairs[j].k
+		}
+		return pairs[i].v < pairs[j].v
+	})
+	out := make([]string, len(pairs))
+	for i, p := range pairs {
+		out[i] = p.k + "=" + p.v
+	}
+	return strings.Join(out, "&")
+}
+
+// awsEscape percent-encodes everything except the unreserved set A-Z a-z 0-9 - _ . ~.
+func awsEscape(s string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= 'A' && c <= 'Z', c >= 'a' && c <= 'z', c >= '0' && c <= '9',
+			c == '-', c == '_', c == '.', c == '~':
+			b.WriteByte(c)
+		default:
+			fmt.Fprintf(&b, "%%%02X", c)
+		}
+	}
+	return b.String()
 }

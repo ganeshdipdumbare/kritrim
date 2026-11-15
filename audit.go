@@ -97,7 +97,7 @@ func (a *fileAudit) Write(ctx context.Context, e Entry) error {
 	defer f.Close()
 	// Another process may append to the same log. The lock makes load,
 	// append and head update one step for every writer.
-	unlock, err := lockLog(f)
+	unlock, err := lockFile(f)
 	if err != nil {
 		return err
 	}

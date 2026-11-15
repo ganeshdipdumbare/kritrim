@@ -43,12 +43,18 @@ type mcpClient struct {
 	peer    *mcpPeer
 	http    *http.Client
 	url     string
-	headers map[string]string
+	headers map[string]string // values may be secret:// references, resolved per request
+	secret  func(ctx context.Context, name string) (string, error)
+	smu     sync.Mutex // guards session: tool calls run in parallel
 	session string
 	risky   bool
 	timeout time.Duration
 	close   sync.Once
 }
+
+// mcpMaxBody caps what one MCP response may hold. The server is an untrusted
+// peer, so its reply must not size host memory.
+const mcpMaxBody = 8 << 20
 
 type mcpMsg struct {
 	JSONRPC string          `json:"jsonrpc"`
@@ -140,7 +146,13 @@ func connectMCP(ctx context.Context, cfg MCPConfig, a *Agent) (*mcpClient, error
 	if cfg.Timeout <= 0 {
 		cfg.Timeout = 60 * time.Second
 	}
-	c := &mcpClient{name: cfg.Name, headers: cfg.Headers, risky: cfg.Risky, timeout: cfg.Timeout}
+	// Copy the headers: the caller's map is theirs, and must never hold
+	// resolved secrets or be written to from several agents at once.
+	headers := make(map[string]string, len(cfg.Headers))
+	for k, v := range cfg.Headers {
+		headers[k] = v
+	}
+	c := &mcpClient{name: cfg.Name, headers: headers, risky: cfg.Risky, timeout: cfg.Timeout, secret: a.env.Secret}
 	if cfg.Command != "" {
 		cmd := exec.Command(cfg.Command, cfg.Args...)
 		cmd.Env = childEnv(cfg.Env)
@@ -173,13 +185,13 @@ func connectMCP(ctx context.Context, cfg MCPConfig, a *Agent) (*mcpClient, error
 				return nil, err
 			}
 		}
-		for k, v := range cfg.Headers {
+		// Check the secrets exist now, so a missing one fails at connect. The
+		// values are read again for each request, so a rotated secret is used.
+		for _, v := range headers {
 			if strings.HasPrefix(v, "secret://") {
-				val, err := a.env.Secret(ctx, strings.TrimPrefix(v, "secret://"))
-				if err != nil {
+				if _, err := a.env.Secret(ctx, strings.TrimPrefix(v, "secret://")); err != nil {
 					return nil, err
 				}
-				c.headers[k] = val
 			}
 		}
 		c.url = cfg.URL
@@ -234,10 +246,20 @@ func (c *mcpClient) call(ctx context.Context, method string, params, out any) er
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
 	for k, v := range c.headers {
+		if strings.HasPrefix(v, "secret://") && c.secret != nil {
+			val, err := c.secret(ctx, strings.TrimPrefix(v, "secret://"))
+			if err != nil {
+				return err
+			}
+			v = val
+		}
 		req.Header.Set(k, v)
 	}
-	if c.session != "" {
-		req.Header.Set("Mcp-Session-Id", c.session)
+	c.smu.Lock()
+	session := c.session
+	c.smu.Unlock()
+	if session != "" {
+		req.Header.Set("Mcp-Session-Id", session)
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
@@ -245,7 +267,9 @@ func (c *mcpClient) call(ctx context.Context, method string, params, out any) er
 	}
 	defer resp.Body.Close()
 	if sid := resp.Header.Get("Mcp-Session-Id"); sid != "" {
+		c.smu.Lock()
 		c.session = sid
+		c.smu.Unlock()
 	}
 	if resp.StatusCode/100 != 2 {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
@@ -255,17 +279,36 @@ func (c *mcpClient) call(ctx context.Context, method string, params, out any) er
 	ct := resp.Header.Get("Content-Type")
 	var msg mcpMsg
 	if strings.HasPrefix(ct, "text/event-stream") {
-		sc := bufio.NewScanner(resp.Body)
+		// A frame longer than the cap is an error, not a silent cut.
+		sc := bufio.NewScanner(io.LimitReader(resp.Body, mcpMaxBody))
+		sc.Buffer(make([]byte, 0, 64<<10), mcpMaxBody)
+		found := false
 		for sc.Scan() {
 			line := strings.TrimSpace(sc.Text())
 			if strings.HasPrefix(line, "data:") {
 				if err := json.Unmarshal([]byte(strings.TrimSpace(strings.TrimPrefix(line, "data:"))), &msg); err == nil {
+					found = true
 					break
 				}
 			}
 		}
-	} else if err := json.NewDecoder(resp.Body).Decode(&msg); err != nil {
-		return err
+		if err := sc.Err(); err != nil && !found {
+			return fmt.Errorf("mcp: reading event stream: %w", err)
+		}
+		if !found {
+			return errors.New("mcp: no data frame in event stream")
+		}
+	} else {
+		body, err := io.ReadAll(io.LimitReader(resp.Body, mcpMaxBody+1))
+		if err != nil {
+			return err
+		}
+		if len(body) > mcpMaxBody {
+			return fmt.Errorf("mcp: response larger than %d bytes", mcpMaxBody)
+		}
+		if err := json.Unmarshal(body, &msg); err != nil {
+			return err
+		}
 	}
 	if msg.Error != nil {
 		return fmt.Errorf("mcp: %s", msg.Error.Message)
@@ -316,6 +359,10 @@ func (c *mcpClient) tools(ctx context.Context) ([]Tool, error) {
 			var b strings.Builder
 			for _, part := range out.Content {
 				if part.Type == "text" {
+					if b.Len()+len(part.Text) > mcpMaxBody {
+						b.WriteString("\n[output truncated]")
+						break
+					}
 					b.WriteString(part.Text)
 				}
 			}

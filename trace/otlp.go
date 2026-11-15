@@ -69,9 +69,12 @@ func OTLP(cfg OTLPConfig) kritrim.Hooks {
 		BeforeRun: func(ctx context.Context, ev *kritrim.RunEvent) error {
 			e.mu.Lock()
 			defer e.mu.Unlock()
+			// Spans are keyed by the run ID the framework sets. Without one there
+			// is no key AfterRun could find again, so the run is not traced
+			// rather than leaking an entry for the life of the process.
 			id := kritrim.RunIDFrom(ctx)
 			if id == "" {
-				id = newID()
+				return nil
 			}
 			e.runs[id] = &runSpans{trace: newID(), root: newSpanID(), start: time.Now()}
 			return nil

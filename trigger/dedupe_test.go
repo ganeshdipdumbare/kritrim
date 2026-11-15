@@ -292,3 +292,19 @@ func TestSchedulerValidation(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// A claim whose leader never finished is taken over once it expires, as the
+// SQL store does. Before, the memory store kept it forever.
+func TestMemoryDedupeTakesOverExpiredClaim(t *testing.T) {
+	ctx := context.Background()
+	s := MemoryDedupe(10)
+	past := time.Now().Add(-time.Second)
+	if c, err := s.Claim(ctx, "d1", "p", past); err != nil || !c.Won {
+		t.Fatalf("first claim: %+v %v", c, err)
+	}
+	// The leader's claim has expired and was never completed.
+	c, err := s.Claim(ctx, "d1", "p", time.Now().Add(time.Hour))
+	if err != nil || !c.Won {
+		t.Fatalf("expired unfinished claim was not taken over: %+v %v", c, err)
+	}
+}

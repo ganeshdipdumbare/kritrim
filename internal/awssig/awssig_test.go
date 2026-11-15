@@ -51,3 +51,20 @@ func TestFromEnv(t *testing.T) {
 		t.Fatalf("%+v", c)
 	}
 }
+
+// The canonical query follows the SigV4 rules: %20 for a space, pairs sorted
+// by key then value, repeated keys kept.
+func TestCanonicalQuery(t *testing.T) {
+	cases := map[string]string{
+		"b=2&a=x y&a=1": "a=1&a=x%20y&b=2",
+		"":              "",
+		"flag":          "flag=",
+		"k=a%2Fb":       "k=a%2Fb",
+		"tilde=~-_.":    "tilde=~-_.",
+	}
+	for in, want := range cases {
+		if got := canonicalQuery(in); got != want {
+			t.Errorf("canonicalQuery(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
