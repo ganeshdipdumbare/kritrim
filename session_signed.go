@@ -61,6 +61,11 @@ func (s *signedSessions) Load(ctx context.Context, id string) (*Session, error) 
 	if v.Sig == "" {
 		return nil, fmt.Errorf("%w: session %s carries no signature", ErrSessionTampered, idOf(id))
 	}
+	// The signature covers the record's own ID, so a valid record copied
+	// under another thread's key still verifies. The key must match too.
+	if idOf(v.ID) != idOf(id) {
+		return nil, fmt.Errorf("%w: session %s holds another session's record", ErrSessionTampered, idOf(id))
+	}
 	want, err := s.sign(v)
 	if err != nil {
 		return nil, err

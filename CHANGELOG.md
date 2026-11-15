@@ -4,6 +4,22 @@ All notable changes. kritrim follows [semantic versioning](https://semver.org)
 from v1.0.0 on; see [docs/API.md](docs/API.md) for what the promise covers and
 [docs/MIGRATING.md](docs/MIGRATING.md) for moving from v0.9.
 
+## Unreleased
+
+### Fixed
+
+- **`Local()` is no longer treated as a sandbox.** It runs on the host, so the
+  python tool now needs `PythonConfig.AllowUnsafeHost` with it, as the docs
+  describe. Previously `Config.Sandbox: Local()` skipped that guard.
+- **Sealed boxes cannot read host secrets through `secret://` references** in
+  an HTTP request. Boxes get secrets only through the placeholder `secret` RPC.
+- **Signed sessions reject a record copied under another thread's key.** The
+  signature already covered the record's own ID, but `Load` did not check it
+  against the requested ID.
+- **SSH sandbox quotes environment values** and refuses entries that are not
+  `NAME=value`. A value containing shell metacharacters could run commands on
+  the remote host, and values with spaces were split.
+
 ## v1.0.0 — 2026-11-14
 
 The stable release. Every item the roadmap listed as open is done, the API is

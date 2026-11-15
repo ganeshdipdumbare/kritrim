@@ -167,14 +167,25 @@ func TestPythonNeedsASandbox(t *testing.T) {
 	}
 }
 
-// TestPythonRunsInASandbox uses the local sandbox as a stand-in for a
-// container: the point is that Exec goes through the machine and the code
+// fakeBoxSandbox stands in for a container. It wraps the local machine so
+// it is not Local(), which is what the sandboxed check treats as isolation.
+// The point of the test is that Exec goes through the machine and the code
 // arrives on stdin, never as an argument.
+type fakeBoxSandbox struct{}
+
+func (fakeBoxSandbox) Open(ctx context.Context, opts OpenConfig) (Machine, error) {
+	m, err := Local().Open(ctx, opts)
+	if err != nil {
+		return nil, err
+	}
+	return struct{ Machine }{m}, nil
+}
+
 func TestPythonRunsInASandbox(t *testing.T) {
 	if _, err := lookPython(); err != nil {
 		t.Skip("no python3 on this machine")
 	}
-	a := newAgent(t, Config{Model: Mock(), Sandbox: Local(),
+	a := newAgent(t, Config{Model: Mock(), Sandbox: fakeBoxSandbox{},
 		Tools: []Tool{Python(PythonConfig{})}})
 	ctx := context.WithValue(context.Background(), keyEnv, a.env)
 	out, err := Python(PythonConfig{}).run(ctx, map[string]any{"code": "print(6 * 7)"})

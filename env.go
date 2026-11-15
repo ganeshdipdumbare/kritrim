@@ -474,5 +474,12 @@ var inheritedEnv = []string{"PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", 
 	"TZ", "TERM", "TMPDIR", "TMP", "TEMP", "SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "COMSPEC", "PATHEXT"}
 
 // sandboxed reports whether this agent runs its commands and file calls in
-// a sandbox machine rather than on the host.
-func (e *hostEnv) sandboxed() bool { return e.a.machine != nil }
+// an isolation boundary rather than on the host. Local() runs on the host,
+// so it does not count: the python tool's AllowUnsafeHost guard depends on it.
+func (e *hostEnv) sandboxed() bool {
+	if e.a.machine == nil {
+		return false
+	}
+	_, local := e.a.machine.(*localMachine)
+	return !local
+}

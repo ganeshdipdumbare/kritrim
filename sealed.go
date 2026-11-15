@@ -321,6 +321,12 @@ func (b *boxHost) http(ctx context.Context, raw json.RawMessage) (any, error) {
 	defer release()
 	r.AllowHosts = allow
 	r.sensitive = false
+	// secret:// would make the host read its own environment for the box.
+	// A box gets secrets only through placeholders from the secret RPC,
+	// which the allowlist and host bindings govern.
+	if refersToHostSecret(r) {
+		return nil, errors.New("kritrim: a sealed box may not name host secrets with secret://; use the secret RPC")
+	}
 	if err := b.substitute(&r); err != nil {
 		return nil, err
 	}
@@ -335,6 +341,20 @@ func (b *boxHost) http(ctx context.Context, raw json.RawMessage) (any, error) {
 		}
 	}
 	return resp, nil
+}
+
+// refersToHostSecret reports whether any part of the request uses the
+// secret:// form that hostEnv resolves from the host environment.
+func refersToHostSecret(r httpRequest) bool {
+	if strings.Contains(r.URL, "secret://") || bytes.Contains(r.Body, []byte("secret://")) {
+		return true
+	}
+	for _, v := range r.Headers {
+		if strings.Contains(v, "secret://") {
+			return true
+		}
+	}
+	return false
 }
 
 func (b *boxHost) substitute(r *httpRequest) error {

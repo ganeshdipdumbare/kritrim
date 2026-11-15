@@ -15,6 +15,7 @@ import (
 	"io/fs"
 	"os"
 	"os/exec"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -126,7 +127,10 @@ func (m *machine) Exec(ctx context.Context, req kritrim.ExecRequest) (kritrim.Ex
 	if timeout <= 0 {
 		timeout = m.cfg.Timeout
 	}
-	remote := m.command(req.Command, req.Dir, req.Env)
+	remote, err := m.command(req.Command, req.Dir, req.Env)
+	if err != nil {
+		return kritrim.ExecResult{}, err
+	}
 	cctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	cmd := exec.CommandContext(cctx, "ssh", (&sandbox{cfg: m.cfg}).args(remote)...)
@@ -135,7 +139,7 @@ func (m *machine) Exec(ctx context.Context, req kritrim.ExecRequest) (kritrim.Ex
 	}
 	var out, errb strings.Builder
 	cmd.Stdout, cmd.Stderr = &out, &errb
-	err := cmd.Run()
+	err = cmd.Run()
 	res := kritrim.ExecResult{Stdout: out.String(), Stderr: errb.String()}
 	if err != nil {
 		var ee *exec.ExitError
@@ -149,7 +153,10 @@ func (m *machine) Exec(ctx context.Context, req kritrim.ExecRequest) (kritrim.Ex
 }
 
 func (m *machine) ExecStream(ctx context.Context, req kritrim.ExecRequest, emit func(stdout, stderr string)) (kritrim.ExecResult, error) {
-	remote := m.command(req.Command, req.Dir, req.Env)
+	remote, err := m.command(req.Command, req.Dir, req.Env)
+	if err != nil {
+		return kritrim.ExecResult{}, err
+	}
 	cmd := exec.CommandContext(ctx, "ssh", (&sandbox{cfg: m.cfg}).args(remote)...)
 	if req.Stdin != nil {
 		cmd.Stdin = bytes.NewReader(req.Stdin)
@@ -199,7 +206,10 @@ func (m *machine) ExecStream(ctx context.Context, req kritrim.ExecRequest, emit 
 }
 
 func (m *machine) Start(ctx context.Context, req kritrim.StartRequest) (kritrim.Process, error) {
-	remote := m.command(req.Command, req.Dir, req.Env)
+	remote, err := m.command(req.Command, req.Dir, req.Env)
+	if err != nil {
+		return nil, err
+	}
 	cmd := exec.Command("ssh", (&sandbox{cfg: m.cfg}).args(remote)...)
 	in, err := cmd.StdinPipe()
 	if err != nil {
@@ -236,20 +246,29 @@ func (m *machine) Write(ctx context.Context, p string, data []byte, mode fs.File
 
 func (m *machine) Close(ctx context.Context) error { return nil }
 
-func (m *machine) command(argv []string, dir string, env []string) string {
+// envName is a valid shell variable name.
+var envName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+func (m *machine) command(argv []string, dir string, env []string) (string, error) {
 	var b strings.Builder
 	b.WriteString("cd " + quote(firstNonEmpty(dir, m.cfg.WorkingDir)))
 	for _, e := range env {
-		b.WriteString(" && export " + e)
+		// Each entry is NAME=value. The value is data, so it is quoted;
+		// an entry that is not NAME=value is refused rather than guessed at.
+		k, v, ok := strings.Cut(e, "=")
+		if !ok || !envName.MatchString(k) {
+			return "", errors.New("ssh: environment entries must be NAME=value")
+		}
+		b.WriteString(" && export " + k + "=" + quote(v))
 	}
 	if len(argv) == 0 {
-		return b.String()
+		return b.String(), nil
 	}
 	b.WriteString(" && exec")
 	for _, a := range argv {
 		b.WriteString(" " + quote(a))
 	}
-	return b.String()
+	return b.String(), nil
 }
 
 func firstNonEmpty(a, b string) string {
