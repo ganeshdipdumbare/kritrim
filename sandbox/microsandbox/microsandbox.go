@@ -71,6 +71,10 @@ func (s *sandbox) Open(ctx context.Context, opts kritrim.OpenConfig) (kritrim.Ma
 	if opts.Image != "" {
 		image = opts.Image
 	}
+	// An image starting with "-" would be read by msb as a flag.
+	if strings.HasPrefix(image, "-") {
+		return nil, fmt.Errorf("microsandbox: image %q must not start with '-'", image)
+	}
 	args := []string{"create", image, "--name", name, "-q"}
 	if !opts.Network {
 		args = append(args, "--no-net")

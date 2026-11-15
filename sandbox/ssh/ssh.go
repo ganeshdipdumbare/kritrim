@@ -6,7 +6,6 @@
 package ssh
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"errors"
@@ -22,6 +21,7 @@ import (
 	"time"
 
 	"github.com/ganeshdipdumbare/kritrim"
+	"github.com/ganeshdipdumbare/kritrim/internal/boxutil"
 )
 
 // Config configures an SSH sandbox.
@@ -59,7 +59,11 @@ func New(cfg Config) (kritrim.Sandbox, error) {
 	return &sandbox{cfg: cfg}, nil
 }
 
-var dangerous = []string{"proxycommand", "localcommand", "permitlocalcommand", "knownhostscommand", "remotecommand"}
+// dangerous are options that run or load code on the local host. PKCS11Provider
+// and SecurityKeyProvider dlopen a library; Match exec and Include can run
+// commands or read further config.
+var dangerous = []string{"proxycommand", "localcommand", "permitlocalcommand", "knownhostscommand", "remotecommand",
+	"pkcs11provider", "securitykeyprovider", "match", "include"}
 
 func checkOption(opt string) error {
 	low := strings.ToLower(strings.TrimSpace(opt))
@@ -111,8 +115,8 @@ func (s *sandbox) run(ctx context.Context, remote string, stdin []byte, timeout 
 	if stdin != nil {
 		cmd.Stdin = strings.NewReader(string(stdin))
 	}
-	var out, errb strings.Builder
-	cmd.Stdout, cmd.Stderr = &out, &errb
+	out, errb := boxutil.NewCapped(), boxutil.NewCapped()
+	cmd.Stdout, cmd.Stderr = out, errb
 	err := cmd.Run()
 	if err != nil {
 		return "", fmt.Errorf("%v: %s", err, strings.TrimSpace(errb.String()))
@@ -137,8 +141,8 @@ func (m *machine) Exec(ctx context.Context, req kritrim.ExecRequest) (kritrim.Ex
 	if req.Stdin != nil {
 		cmd.Stdin = strings.NewReader(string(req.Stdin))
 	}
-	var out, errb strings.Builder
-	cmd.Stdout, cmd.Stderr = &out, &errb
+	out, errb := boxutil.NewCapped(), boxutil.NewCapped()
+	cmd.Stdout, cmd.Stderr = out, errb
 	err = cmd.Run()
 	res := kritrim.ExecResult{Stdout: out.String(), Stderr: errb.String()}
 	if err != nil {
@@ -173,25 +177,23 @@ func (m *machine) ExecStream(ctx context.Context, req kritrim.ExecRequest, emit 
 		return kritrim.ExecResult{}, err
 	}
 	var wg sync.WaitGroup
-	var o, e strings.Builder
-	scan := func(rd io.Reader, dst *strings.Builder, isErr bool) {
+	o, e := boxutil.NewCapped(), boxutil.NewCapped()
+	pump := func(rd io.Reader, dst *boxutil.Capped, isErr bool) {
 		defer wg.Done()
-		sc := bufio.NewScanner(rd)
-		for sc.Scan() {
-			line := sc.Text() + "\n"
-			dst.WriteString(line)
-			if emit != nil {
-				if isErr {
-					emit("", line)
-				} else {
-					emit(line, "")
-				}
+		_ = boxutil.Lines(rd, dst, func(chunk string) {
+			if emit == nil {
+				return
 			}
-		}
+			if isErr {
+				emit("", chunk)
+			} else {
+				emit(chunk, "")
+			}
+		})
 	}
 	wg.Add(2)
-	go scan(out, &o, false)
-	go scan(errb, &e, true)
+	go pump(out, o, false)
+	go pump(errb, e, true)
 	wg.Wait()
 	code := 0
 	if werr := cmd.Wait(); werr != nil {
@@ -240,6 +242,14 @@ func (m *machine) Write(ctx context.Context, p string, data []byte, mode fs.File
 	cmd.Stderr = &errb
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("ssh: write %s: %v: %s", p, err, errb.String())
+	}
+	// The remote umask decides the file's mode otherwise, so apply the
+	// requested one. Nothing else is trusted to set it.
+	if mode == 0 {
+		mode = 0o644
+	}
+	if _, err := (&sandbox{cfg: m.cfg}).run(cctx, fmt.Sprintf("chmod %o %s", mode.Perm(), quote(p)), nil, m.cfg.Timeout); err != nil {
+		return fmt.Errorf("ssh: chmod %s: %w", p, err)
 	}
 	return nil
 }

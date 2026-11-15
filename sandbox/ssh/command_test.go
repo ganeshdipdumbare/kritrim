@@ -48,3 +48,18 @@ func TestCommandRefusesMalformedEnv(t *testing.T) {
 		}
 	}
 }
+
+// Options that load or run local code are refused; ordinary ones pass.
+func TestCheckOptionRefusesLocalCodeOptions(t *testing.T) {
+	for _, bad := range []string{"PKCS11Provider=/tmp/evil.so", "SecurityKeyProvider /tmp/evil.so",
+		"Match exec id", "Include /tmp/x", "ProxyCommand=sh -c id", "LocalCommand=id"} {
+		if checkOption(bad) == nil {
+			t.Errorf("accepted %q", bad)
+		}
+	}
+	for _, ok := range []string{"ServerAliveInterval=5", "IdentitiesOnly=yes", "StrictHostKeyChecking=yes"} {
+		if err := checkOption(ok); err != nil {
+			t.Errorf("refused %q: %v", ok, err)
+		}
+	}
+}

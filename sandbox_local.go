@@ -1,7 +1,6 @@
 package kritrim
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"errors"
@@ -10,8 +9,9 @@ import (
 	"io/fs"
 	"os"
 	"os/exec"
-	"strings"
 	"sync"
+
+	"github.com/ganeshdipdumbare/kritrim/internal/boxutil"
 )
 
 // Local returns a sandbox that runs on this host. It is not an isolation
@@ -30,6 +30,14 @@ func (localSandbox) Open(ctx context.Context, opts OpenConfig) (Machine, error) 
 type localMachine struct{}
 
 func (m *localMachine) Exec(ctx context.Context, r ExecRequest) (ExecResult, error) {
+	// The agent checks its allowlist before it reaches a machine. The check
+	// repeats here so a caller that reaches the host through the machine
+	// directly is held to the same list.
+	if r.Allow != nil {
+		if err := checkCommand(execRequest{Command: r.Command, Allow: r.Allow}); err != nil {
+			return ExecResult{}, err
+		}
+	}
 	res, err := localExec(ctx, execRequest{Command: r.Command, Dir: r.Dir, Env: r.Env,
 		Stdin: r.Stdin, Timeout: r.Timeout}, false)
 	return ExecResult(res), err
@@ -56,25 +64,23 @@ func (m *localMachine) ExecStream(ctx context.Context, r ExecRequest, emit func(
 		return ExecResult{}, err
 	}
 	var wg sync.WaitGroup
-	var o, e strings.Builder
-	scan := func(rd io.Reader, dst *strings.Builder, isErr bool) {
+	o, e := boxutil.NewCapped(), boxutil.NewCapped()
+	pump := func(rd io.Reader, dst *boxutil.Capped, isErr bool) {
 		defer wg.Done()
-		sc := bufio.NewScanner(rd)
-		for sc.Scan() {
-			line := sc.Text() + "\n"
-			dst.WriteString(line)
-			if emit != nil {
-				if isErr {
-					emit("", line)
-				} else {
-					emit(line, "")
-				}
+		_ = boxutil.Lines(rd, dst, func(chunk string) {
+			if emit == nil {
+				return
 			}
-		}
+			if isErr {
+				emit("", chunk)
+			} else {
+				emit(chunk, "")
+			}
+		})
 	}
 	wg.Add(2)
-	go scan(out, &o, false)
-	go scan(errb, &e, true)
+	go pump(out, o, false)
+	go pump(errb, e, true)
 	wg.Wait()
 	code := 0
 	if werr := cmd.Wait(); werr != nil {

@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ganeshdipdumbare/kritrim/internal/boxutil"
 	"github.com/ganeshdipdumbare/kritrim/internal/netguard"
 )
 
@@ -228,7 +229,7 @@ func (e *hostEnv) Exec(ctx context.Context, r execRequest) (execResult, error) {
 	}
 	if e.a.machine != nil {
 		res, err := e.a.machine.Exec(ctx, ExecRequest{Command: r.Command, Dir: r.Dir, Env: r.Env,
-			Stdin: r.Stdin, Timeout: r.Timeout})
+			Stdin: r.Stdin, Timeout: r.Timeout, Allow: r.Allow})
 		return execResult(res), err
 	}
 	return localExec(ctx, r, true)
@@ -268,8 +269,8 @@ func localExec(ctx context.Context, r execRequest, check bool) (execResult, erro
 	cmd.Dir = r.Dir
 	cmd.Env = childEnv(r.Env)
 	cmd.Stdin = strings.NewReader(string(r.Stdin))
-	var out, errb strings.Builder
-	cmd.Stdout, cmd.Stderr = &out, &errb
+	out, errb := boxutil.NewCapped(), boxutil.NewCapped()
+	cmd.Stdout, cmd.Stderr = out, errb
 	err := cmd.Run()
 	code := 0
 	if err != nil {
@@ -284,7 +285,7 @@ func localExec(ctx context.Context, r execRequest, check bool) (execResult, erro
 }
 
 func (e *hostEnv) ReadFile(ctx context.Context, r fsRequest) ([]byte, error) {
-	if e.a.machine != nil {
+	if e.sandboxed() {
 		p, err := boxPath(r.Path, r.Root)
 		if err != nil {
 			return nil, err
@@ -304,7 +305,7 @@ func localRead(r fsRequest) ([]byte, error) {
 }
 
 func (e *hostEnv) WriteFile(ctx context.Context, r fsRequest) error {
-	if e.a.machine != nil {
+	if e.sandboxed() {
 		if r.ReadOnly {
 			return errors.New("kritrim: files tool is read-only")
 		}
@@ -381,19 +382,20 @@ func (e *hostEnv) Secret(ctx context.Context, name string) (string, error) {
 // ---- shared checks ----
 
 // boxPath resolves a path inside a sandbox, where the host's absolute paths
-// mean nothing.
+// mean nothing. It is only used for isolated machines: a machine that shares
+// the host filesystem goes through openUnder instead (see sandboxed).
 func boxPath(p, root string) (string, error) {
 	if root == "" {
 		root = "/"
 	}
-	if !strings.HasPrefix(p, "/") {
+	if !path.IsAbs(root) {
+		return "", fmt.Errorf("kritrim: sandbox root %q must be an absolute path", root)
+	}
+	if !path.IsAbs(p) {
 		p = path.Join(root, p)
 	}
 	p = path.Clean(p)
 	if root != "/" && p != root && !strings.HasPrefix(p, root+"/") {
-		return "", fmt.Errorf("kritrim: path %q escapes %q", p, root)
-	}
-	if strings.HasPrefix(p, "/../") {
 		return "", fmt.Errorf("kritrim: path %q escapes %q", p, root)
 	}
 	return p, nil
