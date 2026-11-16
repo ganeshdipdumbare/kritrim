@@ -228,8 +228,7 @@ func (e *hostEnv) Exec(ctx context.Context, r execRequest) (execResult, error) {
 		return execResult{}, err
 	}
 	if e.a.machine != nil {
-		res, err := e.a.machine.Exec(ctx, ExecRequest{Command: r.Command, Dir: r.Dir, Env: r.Env,
-			Stdin: r.Stdin, Timeout: r.Timeout, Allow: r.Allow})
+		res, err := e.a.machine.Exec(ctx, ExecRequest(r))
 		return execResult(res), err
 	}
 	return localExec(ctx, r, true)

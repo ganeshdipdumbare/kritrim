@@ -312,14 +312,6 @@ func withTimeoutOr(ctx context.Context, d, def time.Duration) (context.Context, 
 	return context.WithTimeout(ctx, d)
 }
 
-// withTimeout bounds a request by its own timeout, if it has one.
-func withTimeout(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc) {
-	if d <= 0 {
-		return ctx, func() {}
-	}
-	return context.WithTimeout(ctx, d)
-}
-
 func (m *dockerMachine) Start(ctx context.Context, r StartRequest) (Process, error) {
 	if len(r.Command) == 0 {
 		return nil, errors.New("kritrim: empty command")
