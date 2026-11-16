@@ -154,7 +154,10 @@ type Agent struct {
 	mcp      []*mcpClient
 	mcpTools []string
 	shared   *Agent
-	close    sync.Once
+	// toolErr is set by WithTools when the extra tools are invalid or collide
+	// with a tool already on the agent. Run and Stream return it.
+	toolErr error
+	close   sync.Once
 
 	cancelMu sync.Mutex
 	cancels  map[string]context.CancelFunc
@@ -162,7 +165,8 @@ type Agent struct {
 	idemMu sync.Mutex
 	idem   map[string]*idemEntry
 
-	auditMu sync.Mutex
+	auditMu  sync.Mutex
+	auditErr error // first audit write that failed; a broken log stops the agent
 }
 
 type idemEntry struct {
@@ -261,8 +265,28 @@ func (a *Agent) connectMCP(ctx context.Context, configs []MCPConfig) error {
 func (a *Agent) WithTools(extra ...Tool) *Agent {
 	cp := &Agent{cfg: a.cfg, model: a.model, session: a.session, env: a.env,
 		machine: a.machine, redactor: a.redactor, box: a.box, mcp: a.mcp, mcpTools: a.mcpTools,
-		shared: a}
+		shared: a, toolErr: a.toolErr}
 	cp.cfg.Tools = append(append([]Tool(nil), a.cfg.Tools...), extra...)
+	// Check the extras as New checks the configured tools. A collision would
+	// otherwise be silent: tool lookup returns the first match, so the new tool
+	// would never run. MCP tools are on a.cfg.Tools, so they are covered too.
+	if cp.toolErr == nil {
+		names := make(map[string]bool, len(cp.cfg.Tools))
+		for _, t := range a.cfg.Tools {
+			names[t.Name] = true
+		}
+		for _, t := range extra {
+			if err := t.validate(); err != nil {
+				cp.toolErr = err
+				break
+			}
+			if names[t.Name] {
+				cp.toolErr = fmt.Errorf("kritrim: duplicate tool %q", t.Name)
+				break
+			}
+			names[t.Name] = true
+		}
+	}
 	return cp
 }
 

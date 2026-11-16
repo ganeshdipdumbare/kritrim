@@ -1,7 +1,6 @@
 package kritrim
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"errors"
@@ -10,8 +9,10 @@ import (
 	"io/fs"
 	"os"
 	"os/exec"
-	"strings"
 	"sync"
+	"time"
+
+	"github.com/ganeshdipdumbare/kritrim/internal/boxutil"
 )
 
 // Local returns a sandbox that runs on this host. It is not an isolation
@@ -30,6 +31,14 @@ func (localSandbox) Open(ctx context.Context, opts OpenConfig) (Machine, error) 
 type localMachine struct{}
 
 func (m *localMachine) Exec(ctx context.Context, r ExecRequest) (ExecResult, error) {
+	// The agent checks its allowlist before it reaches a machine. The check
+	// repeats here so a caller that reaches the host through the machine
+	// directly is held to the same list.
+	if r.Allow != nil {
+		if err := checkCommand(execRequest{Command: r.Command, Allow: r.Allow}); err != nil {
+			return ExecResult{}, err
+		}
+	}
 	res, err := localExec(ctx, execRequest{Command: r.Command, Dir: r.Dir, Env: r.Env,
 		Stdin: r.Stdin, Timeout: r.Timeout}, false)
 	return ExecResult(res), err
@@ -38,6 +47,14 @@ func (m *localMachine) Exec(ctx context.Context, r ExecRequest) (ExecResult, err
 func (m *localMachine) ExecStream(ctx context.Context, r ExecRequest, emit func(stdout, stderr string)) (ExecResult, error) {
 	if len(r.Command) == 0 {
 		return ExecResult{}, fmt.Errorf("kritrim: empty command")
+	}
+	// The same timeout Exec honors: a streamed command is not exempt from it.
+	ctx, cancel := withTimeoutOr(ctx, r.Timeout, 60*time.Second)
+	defer cancel()
+	if r.Allow != nil {
+		if err := checkCommand(execRequest{Command: r.Command, Allow: r.Allow}); err != nil {
+			return ExecResult{}, err
+		}
 	}
 	cmd := exec.CommandContext(ctx, r.Command[0], r.Command[1:]...)
 	cmd.Dir, cmd.Env = r.Dir, childEnv(r.Env)
@@ -56,25 +73,23 @@ func (m *localMachine) ExecStream(ctx context.Context, r ExecRequest, emit func(
 		return ExecResult{}, err
 	}
 	var wg sync.WaitGroup
-	var o, e strings.Builder
-	scan := func(rd io.Reader, dst *strings.Builder, isErr bool) {
+	o, e := boxutil.NewCapped(), boxutil.NewCapped()
+	pump := func(rd io.Reader, dst *boxutil.Capped, isErr bool) {
 		defer wg.Done()
-		sc := bufio.NewScanner(rd)
-		for sc.Scan() {
-			line := sc.Text() + "\n"
-			dst.WriteString(line)
-			if emit != nil {
-				if isErr {
-					emit("", line)
-				} else {
-					emit(line, "")
-				}
+		_ = boxutil.Lines(rd, dst, func(chunk string) {
+			if emit == nil {
+				return
 			}
-		}
+			if isErr {
+				emit("", chunk)
+			} else {
+				emit(chunk, "")
+			}
+		})
 	}
 	wg.Add(2)
-	go scan(out, &o, false)
-	go scan(errb, &e, true)
+	go pump(out, o, false)
+	go pump(errb, e, true)
 	wg.Wait()
 	code := 0
 	if werr := cmd.Wait(); werr != nil {
@@ -91,6 +106,11 @@ func (m *localMachine) ExecStream(ctx context.Context, r ExecRequest, emit func(
 func (m *localMachine) Start(ctx context.Context, r StartRequest) (Process, error) {
 	if len(r.Command) == 0 {
 		return nil, fmt.Errorf("kritrim: empty command")
+	}
+	if r.Allow != nil {
+		if err := checkCommand(execRequest{Command: r.Command, Allow: r.Allow}); err != nil {
+			return nil, err
+		}
 	}
 	cmd := exec.Command(r.Command[0], r.Command[1:]...)
 	cmd.Dir, cmd.Env = r.Dir, childEnv(r.Env)
@@ -110,7 +130,24 @@ func (m *localMachine) Start(ctx context.Context, r StartRequest) (Process, erro
 }
 
 func (m *localMachine) Read(ctx context.Context, path string) ([]byte, error) {
-	return os.ReadFile(path)
+	// Like every other machine's Read, a file past the output limit, or a
+	// device, is an error, not a read into host memory.
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !fi.Mode().IsRegular() {
+		return nil, fmt.Errorf("kritrim: %s is not a regular file", path)
+	}
+	if fi.Size() > boxutil.MaxOutput {
+		return nil, fmt.Errorf("kritrim: %s is larger than %d bytes", path, boxutil.MaxOutput)
+	}
+	return io.ReadAll(io.LimitReader(f, boxutil.MaxOutput+1))
 }
 
 func (m *localMachine) Write(ctx context.Context, path string, data []byte, mode fs.FileMode) error {

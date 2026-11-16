@@ -34,6 +34,14 @@ type WebhookConfig struct {
 	MaxBody int64
 	// Tolerance is how far X-Kritrim-Timestamp may be from now. Default 5m.
 	Tolerance time.Duration
+	// BindPath makes the signature cover the request path (see SignPath). Off
+	// by default, so existing senders keep working; turn it on when one secret
+	// is shared by several endpoints.
+	BindPath bool
+	// RunTimeout bounds one delivery's agent run. A run that hangs past it
+	// fails and releases its claim, so duplicates are not held forever.
+	// Default 10 minutes.
+	RunTimeout time.Duration
 	// DedupeTTL is how long a delivery is remembered. Default 24h; it is
 	// never shorter than twice Tolerance.
 	DedupeTTL time.Duration
@@ -73,6 +81,20 @@ func sign(secret []byte, ts, key string, body []byte) string {
 	return "sha256=" + hex.EncodeToString(mac.Sum(nil))
 }
 
+// SignPath is Sign for an endpoint configured with BindPath. The MAC also
+// covers the request path, so a delivery signed for one endpoint is refused
+// by another that shares the secret.
+func SignPath(secret string, ts time.Time, key, path string, body []byte) string {
+	return signPath([]byte(secret), strconv.FormatInt(ts.Unix(), 10), key, path, body)
+}
+
+func signPath(secret []byte, ts, key, path string, body []byte) string {
+	mac := hmac.New(sha256.New, secret)
+	fmt.Fprintf(mac, "kritrim-webhook-v2\n%d:%s\n%d:%s\n%d:%s\n%d:", len(ts), ts, len(key), key, len(path), path, len(body))
+	mac.Write(body)
+	return "sha256=" + hex.EncodeToString(mac.Sum(nil))
+}
+
 // Webhook returns an http.Handler that verifies a timestamped HMAC signature
 // and runs the agent once per delivery. A delivery is identified by its
 // Idempotency-Key, or by its signature when there is none; duplicates,
@@ -94,11 +116,16 @@ func Webhook(cfg WebhookConfig) (http.Handler, error) {
 	if cfg.Tolerance <= 0 {
 		cfg.Tolerance = 5 * time.Minute
 	}
+	if cfg.RunTimeout <= 0 {
+		cfg.RunTimeout = 10 * time.Minute
+	}
 	if cfg.DedupeTTL <= 0 {
 		cfg.DedupeTTL = 24 * time.Hour
 	}
-	if cfg.DedupeTTL < 2*cfg.Tolerance {
-		cfg.DedupeTTL = 2 * cfg.Tolerance
+	// A claim must outlive the run it guards. Shorter, and it can expire
+	// mid-run and let a retry run the delivery a second time.
+	if floor := cfg.RunTimeout + 2*cfg.Tolerance; cfg.DedupeTTL < floor {
+		cfg.DedupeTTL = floor
 	}
 	if cfg.Store == nil {
 		cfg.Store = MemoryDedupe(0)
@@ -131,13 +158,24 @@ func (h *webhook) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, h.cfg.MaxBody)
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		http.Error(w, "body too large", http.StatusRequestEntityTooLarge)
+		// Only an over-size body is a 413. A failed read is the sender's
+		// problem or the network's, and is not permanent for the payload.
+		var big *http.MaxBytesError
+		if errors.As(err, &big) {
+			http.Error(w, "body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
+		http.Error(w, "could not read body", http.StatusBadRequest)
 		return
 	}
 	ts := r.Header.Get(TimestampHeader)
 	key := r.Header.Get(IdempotencyHeader)
 	sig := r.Header.Get(SignatureHeader)
-	if !h.fresh(ts) || !hmac.Equal([]byte(sig), []byte(sign(h.secret, ts, key, body))) {
+	want := sign(h.secret, ts, key, body)
+	if h.cfg.BindPath {
+		want = signPath(h.secret, ts, key, r.URL.Path, body)
+	}
+	if !h.fresh(ts) || !hmac.Equal([]byte(sig), []byte(want)) {
 		http.Error(w, "bad signature", http.StatusUnauthorized)
 		return
 	}
@@ -153,7 +191,8 @@ func (h *webhook) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	sum := sha256.Sum256(body)
 	print := hex.EncodeToString(sum[:])
 	for {
-		c, err := h.cfg.Store.Claim(r.Context(), id, print, time.Now().Add(h.cfg.DedupeTTL))
+		expires := time.Now().Add(h.cfg.DedupeTTL)
+		c, err := h.cfg.Store.Claim(r.Context(), id, print, expires)
 		switch {
 		case errors.Is(err, ErrBusy):
 			w.Header().Set("Retry-After", "5")
@@ -173,12 +212,21 @@ func (h *webhook) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusOK, out)
 			return
 		case c.Won:
-			h.run(w, r, id, body)
+			h.run(w, r, id, body, expires)
 			return
 		}
 		// Running elsewhere: wait for it, then look again. A leader
 		// that fails releases the delivery and this caller runs it.
-		if !h.wait(r.Context(), id) {
+		// Waiting is bounded: a delivery that never finishes must not hold
+		// its duplicates forever.
+		wctx, cancel := context.WithTimeout(r.Context(), h.cfg.RunTimeout)
+		ok := h.wait(wctx, id)
+		cancel()
+		if !ok {
+			if r.Context().Err() == nil {
+				w.Header().Set("Retry-After", "5")
+				http.Error(w, "busy", http.StatusServiceUnavailable)
+			}
 			return
 		}
 	}
@@ -187,18 +235,23 @@ func (h *webhook) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // run executes a delivery this handler won. Every claim is completed or
 // released, even if a callback or the run panics, so duplicates never wait
 // on an abandoned delivery.
-func (h *webhook) run(w http.ResponseWriter, r *http.Request, id string, body []byte) {
+func (h *webhook) run(w http.ResponseWriter, r *http.Request, id string, body []byte, expires time.Time) {
 	done := make(chan struct{})
 	h.mu.Lock()
 	h.waiting[id] = done
 	h.mu.Unlock()
 	// The run is not tied to this connection: a sender that times out and
 	// retries gets the same result instead of a second run.
-	ctx := context.WithoutCancel(r.Context())
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), h.cfg.RunTimeout)
+	defer cancel()
+	// Release and Complete act only on this leader's claim (see withFence).
+	// They run on a context that is not canceled: a run that hit RunTimeout
+	// must still release its claim, or the delivery stays held.
+	fctx := withFence(context.WithoutCancel(ctx), expires)
 	finished := false
 	defer func() {
 		if !finished {
-			_ = h.cfg.Store.Release(ctx, id)
+			_ = h.cfg.Store.Release(fctx, id)
 		}
 		h.mu.Lock()
 		delete(h.waiting, id)
@@ -213,7 +266,7 @@ func (h *webhook) run(w http.ResponseWriter, r *http.Request, id string, body []
 	}
 	out := map[string]any{"text": res.Text, "thread": res.Thread, "stop": res.Stop}
 	result, _ := json.Marshal(out)
-	if err := h.cfg.Store.Complete(ctx, id, result); err != nil {
+	if err := h.cfg.Store.Complete(fctx, id, result); err != nil {
 		h.logf("webhook dedupe: %v", err)
 	}
 	finished = true

@@ -204,7 +204,7 @@
       }
     }
     if (t.anchor) {
-      var el = document.getElementById(t.anchor);
+      var el = t.anchor; // pageFor already found the element
       if (el) setTimeout(function () { el.scrollIntoView({ block: "start" }); }, 0);
     } else {
       window.scrollTo(0, 0);
@@ -269,6 +269,8 @@
   if (pq) pq.addEventListener("input", function () { sel = 0; render(); });
   if (pal) pal.addEventListener("click", function (e) { if (e.target === pal) closePalette(); });
   document.addEventListener("keydown", function (e) {
+    // A page without the palette has nothing to open.
+    if (!pal) return;
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") { e.preventDefault(); pal.hidden ? openPalette() : closePalette(); return; }
     if (e.key === "/" && pal.hidden && !/input|textarea/i.test(document.activeElement.tagName)) { e.preventDefault(); openPalette(); return; }
     if (pal.hidden) return;

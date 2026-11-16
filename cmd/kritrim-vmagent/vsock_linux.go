@@ -5,6 +5,7 @@ package main
 import (
 	"os"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"github.com/ganeshdipdumbare/kritrim/internal/vmagent"
@@ -27,6 +28,21 @@ type sockaddrVM struct {
 
 const vmaddrCIDAny = 0xFFFFFFFF
 
+// vmaddrCIDHost is the host's context ID. Only the host may drive the agent:
+// a connection from inside the guest arrives from the guest's own CID or from
+// the local CID, and is dropped.
+const vmaddrCIDHost = 2
+
+// peerCID returns the context ID of a connected vsock peer.
+func peerCID(fd uintptr) (uint32, error) {
+	var sa sockaddrVM
+	l := uint32(unsafe.Sizeof(sa))
+	if _, _, e := syscall.RawSyscall(syscall.SYS_GETPEERNAME, fd, uintptr(unsafe.Pointer(&sa)), uintptr(unsafe.Pointer(&l))); e != 0 {
+		return 0, e
+	}
+	return sa.cid, nil
+}
+
 // serveVsock listens on vsock with raw system calls; the syscall package
 // has no AF_VSOCK address type, and connections are used as plain files.
 func serveVsock(env []string) error {
@@ -44,10 +60,20 @@ func serveVsock(env []string) error {
 	for {
 		nfd, _, e := syscall.Syscall6(syscall.SYS_ACCEPT4, uintptr(fd), 0, 0, syscall.SOCK_CLOEXEC, 0, 0)
 		if e != 0 {
-			if e == syscall.EINTR {
+			switch e {
+			case syscall.EINTR, syscall.ECONNABORTED:
+				continue
+			case syscall.EMFILE, syscall.ENFILE, syscall.ENOBUFS, syscall.ENOMEM:
+				// Out of resources is transient: back off and keep serving the
+				// sessions that are already running.
+				time.Sleep(50 * time.Millisecond)
 				continue
 			}
 			return e
+		}
+		if cid, err := peerCID(nfd); err != nil || cid != vmaddrCIDHost {
+			_ = syscall.Close(int(nfd))
+			continue
 		}
 		go vmagent.Serve(os.NewFile(nfd, "vsock"), env)
 	}

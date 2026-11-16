@@ -292,3 +292,50 @@ func TestSchedulerValidation(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// A claim whose leader never finished is taken over once it expires, as the
+// SQL store does. Before, the memory store kept it forever.
+func TestMemoryDedupeTakesOverExpiredClaim(t *testing.T) {
+	ctx := context.Background()
+	s := MemoryDedupe(10)
+	past := time.Now().Add(-time.Second)
+	if c, err := s.Claim(ctx, "d1", "p", past); err != nil || !c.Won {
+		t.Fatalf("first claim: %+v %v", c, err)
+	}
+	// The leader's claim has expired and was never completed.
+	c, err := s.Claim(ctx, "d1", "p", time.Now().Add(time.Hour))
+	if err != nil || !c.Won {
+		t.Fatalf("expired unfinished claim was not taken over: %+v %v", c, err)
+	}
+}
+
+// A leader whose claim expired must not release the claim a newer leader
+// now holds. Before the fence, its deferred Release deleted it.
+func TestStaleLeaderCannotReleaseNewerClaim(t *testing.T) {
+	ctx := context.Background()
+	s := MemoryDedupe(10)
+	oldExp := time.Now().Add(-time.Second)
+	if c, _ := s.Claim(ctx, "d", "p", oldExp); !c.Won {
+		t.Fatal("first claim not won")
+	}
+	newExp := time.Now().Add(time.Hour)
+	if c, _ := s.Claim(ctx, "d", "p", newExp); !c.Won {
+		t.Fatal("takeover not won")
+	}
+	// The old leader finishes late and releases with its own fence.
+	_ = s.Release(withFence(ctx, oldExp), "d")
+	if c, _ := s.Claim(ctx, "d", "p", time.Now().Add(time.Hour)); c.Won {
+		t.Fatal("a stale leader's release freed the live claim")
+	}
+}
+
+// With BindPath, a MAC made for one endpoint does not verify on another that
+// shares the secret.
+func TestSignPathBindsEndpoint(t *testing.T) {
+	body := []byte(`{"x":1}`)
+	a := signPath([]byte("s"), "1", "k", "/hooks/a", body)
+	b := signPath([]byte("s"), "1", "k", "/hooks/b", body)
+	if a == b {
+		t.Fatal("the signature does not depend on the path")
+	}
+}

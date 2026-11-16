@@ -261,6 +261,14 @@ func runCommand(ctx context.Context, command []string, c evals.Case, timeout tim
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, command[0], command[1:]...)
+	// The program runs in its own group, so a timeout ends the processes it
+	// started too, and none of them outlive the case.
+	setProcessGroup(cmd)
+	cmd.Cancel = func() error {
+		killGroup(cmd)
+		return nil
+	}
+	cmd.WaitDelay = 5 * time.Second
 	cmd.Stdin = strings.NewReader(c.Input)
 	cmd.Env = append(os.Environ(), "KRITRIM_CASE="+c.Name)
 	var stdout, stderr bytes.Buffer

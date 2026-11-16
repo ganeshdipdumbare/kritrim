@@ -12,11 +12,13 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"net"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/ganeshdipdumbare/kritrim/internal/vmagent"
 )
@@ -40,16 +42,47 @@ func main() {
 // serve returns only on failure.
 func serve(listen string, env []string) error {
 	if path, ok := strings.CutPrefix(listen, "unix:"); ok {
-		_ = os.Remove(path)
-		l, err := net.Listen("unix", path)
+		// Only a stale socket is replaced. A live one, or any other file, is
+		// refused rather than unlinked.
+		if fi, err := os.Lstat(path); err == nil {
+			if fi.Mode()&os.ModeSocket == 0 {
+				return fmt.Errorf("%s exists and is not a socket", path)
+			}
+			if c, err := net.Dial("unix", path); err == nil {
+				_ = c.Close()
+				return fmt.Errorf("%s is in use by another process", path)
+			}
+			// Remove only the socket that was checked. A different file that
+			// appeared since then is left alone.
+			if cur, err := os.Lstat(path); err != nil || !os.SameFile(cur, fi) {
+				return fmt.Errorf("%s changed while it was being checked", path)
+			}
+			_ = os.Remove(path)
+		}
+		// The protocol runs commands and reads and writes files without
+		// authenticating the peer, so only the owner may connect.
+		l, err := listenUnixPrivate(path)
 		if err != nil {
 			return err
 		}
+		failures := 0
 		for {
 			c, err := l.Accept()
 			if err != nil {
-				return err
+				if errors.Is(err, net.ErrClosed) {
+					return err
+				}
+				// A transient accept failure must not take down the sessions
+				// that are running. A listener that keeps failing is broken,
+				// and is reported rather than retried forever.
+				failures++
+				if failures >= 100 {
+					return fmt.Errorf("accept keeps failing: %w", err)
+				}
+				time.Sleep(50 * time.Millisecond)
+				continue
 			}
+			failures = 0
 			go vmagent.Serve(c, env)
 		}
 	}

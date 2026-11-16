@@ -56,6 +56,9 @@ func (a *Agent) run(ctx context.Context, prompt string, emit func(Event), opts .
 	if emit == nil {
 		emit = func(Event) {}
 	}
+	if a.toolErr != nil {
+		return nil, a.toolErr
+	}
 	if a.box != nil {
 		return a.box.run(ctx, prompt, emit, resolveOptions(opts))
 	}
@@ -74,7 +77,10 @@ func (a *Agent) run(ctx context.Context, prompt string, emit func(Event), opts .
 		return nil, errors.New("kritrim: Output needs a pointer")
 	}
 	if o.idemKey != "" {
-		e, leader := a.idemBegin(o.idemKey)
+		// The key is scoped to the caller's identity and thread, so one
+		// caller's key can never hand back another caller's Result.
+		key := o.user + "\x00" + o.thread + "\x00" + o.idemKey
+		e, leader := a.idemBegin(key)
 		if !leader {
 			select {
 			case <-e.done:
@@ -83,7 +89,7 @@ func (a *Agent) run(ctx context.Context, prompt string, emit func(Event), opts .
 				return nil, ctx.Err()
 			}
 		}
-		defer func() { a.idemFinish(o.idemKey, e, res, err) }()
+		defer func() { a.idemFinish(key, e, res, err) }()
 	}
 
 	runID := o.runID
@@ -141,6 +147,13 @@ func (a *Agent) run(ctx context.Context, prompt string, emit func(Event), opts .
 			Message{Role: RoleUser, Content: prompt, Images: o.images})
 	}
 	a.audit(ctx, o, "run", "", "start")
+	// Copy the decisions: the run consumes them, and the caller's map is theirs.
+	o.decisions = copyDecisions(o.decisions)
+	o.decMu = &sync.Mutex{}
+	o.pending = map[string]Interrupt{}
+	for _, in := range sess.Pending {
+		o.pending[in.CallID] = in
+	}
 	res, err = a.loop(ctx, sess, msgs, ps, o, emit)
 	return res, err
 }
@@ -180,6 +193,9 @@ func (a *Agent) interruptResult(sess *Session, o runOptions) *Result {
 }
 
 func (a *Agent) loop(ctx context.Context, sess *Session, msgs []Message, ps *PausedStep, o runOptions, emit func(Event)) (*Result, error) {
+	if err := a.auditGate(); err != nil {
+		return nil, err
+	}
 	schema, wrapped, err := outputSchema(o.output)
 	if err != nil {
 		return nil, err
@@ -202,15 +218,29 @@ func (a *Agent) loop(ctx context.Context, sess *Session, msgs []Message, ps *Pau
 			}
 			ps.Results = append(ps.Results, res)
 			msgs = append(msgs, toolMessage(call, res))
+			// Checkpoint after each call: if the run fails later, a retry
+			// resumes after the calls that already ran, not before them.
+			ps.Index = i + 1
+			sess.Paused = ps
+			sess.Pending = withoutInterrupt(sess.Pending, call.ID)
+			if err := a.saveSession(ctx, sess, msgs, o); err != nil {
+				return nil, err
+			}
 			r := res
 			emit(Event{Type: EventToolResult, ToolResult: &r, Step: 0})
 		}
 		steps = append(steps, Step{Text: ps.Assistant.Content, ToolCalls: ps.Calls, ToolResults: ps.Results})
 		sess.Pending, sess.Paused = nil, nil
+		if err := a.saveSession(ctx, sess, msgs, o); err != nil {
+			return nil, err
+		}
 	}
 
 	toolCalls := 0
 	for step := 0; ; step++ {
+		if err := a.auditGate(); err != nil {
+			return nil, err
+		}
 		if reason := o.end.get(); reason != "" {
 			stop = a.endByHook(ctx, o, reason)
 			break
@@ -303,6 +333,11 @@ func (a *Agent) loop(ctx context.Context, sess *Session, msgs []Message, ps *Pau
 				res := results[i]
 				stepRec.ToolResults = append(stepRec.ToolResults, res)
 				msgs = append(msgs, toolMessage(call, res))
+				// Checkpoint each result, so a failed run never re-runs a call
+				// that already has its result in the history.
+				if err := a.saveSession(ctx, sess, msgs, o); err != nil {
+					return nil, err
+				}
 				r := res
 				emit(Event{Type: EventToolResult, ToolResult: &r, Step: step})
 			}
@@ -317,6 +352,11 @@ func (a *Agent) loop(ctx context.Context, sess *Session, msgs []Message, ps *Pau
 				}
 				stepRec.ToolResults = append(stepRec.ToolResults, res)
 				msgs = append(msgs, toolMessage(call, res))
+				// Checkpoint each result, so a failed run never re-runs a call
+				// that already has its result in the history.
+				if err := a.saveSession(ctx, sess, msgs, o); err != nil {
+					return nil, err
+				}
 				r := res
 				emit(Event{Type: EventToolResult, ToolResult: &r, Step: step})
 			}
@@ -454,6 +494,37 @@ func (a *Agent) executeCall(ctx context.Context, o runOptions, call ToolCall, em
 	return a.execute(ctx, o, call, emit, false)
 }
 
+// takeDecision returns the decision for a call, if it is for this call, and
+// consumes it: one approval authorizes one call.
+func (a *Agent) takeDecision(o runOptions, call ToolCall) *Decision {
+	if o.decMu != nil {
+		o.decMu.Lock()
+		defer o.decMu.Unlock()
+	}
+	d, ok := o.decisions[call.ID]
+	if !ok || !a.decisionFits(o, call) {
+		return nil
+	}
+	delete(o.decisions, call.ID)
+	return &d
+}
+
+// decisionFits reports whether the call is the one a decision was given
+// for: the same tool with the same arguments as the pending interrupt. A
+// model-chosen call ID that repeats an old one gets no approval from it.
+func (a *Agent) decisionFits(o runOptions, call ToolCall) bool {
+	in, ok := o.pending[call.ID]
+	return ok && in.Tool == call.Name && canonicalArgs(in.Args) == canonicalArgs(call.Args)
+}
+
+func copyDecisions(in map[string]Decision) map[string]Decision {
+	out := make(map[string]Decision, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
+
 // execute runs one call. swapped is true for a call a BeforeTool hook
 // rerouted: decisions recorded for the original tool do not apply to it.
 func (a *Agent) execute(ctx context.Context, o runOptions, call ToolCall, emit func(Event), swapped bool) (ToolResult, *Decision) {
@@ -462,8 +533,8 @@ func (a *Agent) execute(ctx context.Context, o runOptions, call ToolCall, emit f
 		return ToolResult{CallID: call.ID, Name: call.Name, Content: "unknown tool " + call.Name, IsError: true}, nil
 	}
 	var dec *Decision
-	if d, ok := o.decisions[call.ID]; ok && !swapped {
-		dec = &d
+	if !swapped {
+		dec = a.takeDecision(o, call)
 	}
 	if dec == nil && tool.risky() {
 		ap := &Approval{Tool: tool.Name, CallID: call.ID, Args: call.Args,
@@ -489,7 +560,9 @@ func (a *Agent) execute(ctx context.Context, o runOptions, call ToolCall, emit f
 		if dec.Respond != "" {
 			return ToolResult{CallID: call.ID, Name: tool.Name, Content: a.redactor.redact(dec.Respond)}, nil
 		}
-		if !dec.Approve && dec.Args == nil {
+		// Only an approval runs the call. A rejection that also carries
+		// replacement arguments is still a rejection.
+		if !dec.Approve {
 			why := dec.Reason
 			if why == "" {
 				why = "rejected"
@@ -502,6 +575,7 @@ func (a *Agent) execute(ctx context.Context, o runOptions, call ToolCall, emit f
 	}
 
 	te := &ToolEvent{Call: &call, Args: call.Args}
+	approvedArgs := canonicalArgs(call.Args)
 	if a.cfg.Hooks.BeforeTool != nil {
 		if err := a.cfg.Hooks.BeforeTool(ctx, te); err != nil {
 			return ToolResult{CallID: call.ID, Name: tool.Name, Content: "blocked: " + err.Error(), IsError: true}, nil
@@ -522,10 +596,17 @@ func (a *Agent) execute(ctx context.Context, o runOptions, call ToolCall, emit f
 		}
 	}
 
+	// A risky call runs with the arguments that were approved. A hook that
+	// changed them, in place or by replacement, stops the call here.
+	if tool.risky() && canonicalArgs(call.Args) != approvedArgs {
+		return ToolResult{CallID: call.ID, Name: tool.Name, Content: "blocked: a hook changed the arguments of a call that needs approval", IsError: true}, nil
+	}
 	if err := tool.checkArgs(call.Args); err != nil {
 		return ToolResult{CallID: call.ID, Name: tool.Name, Content: "error: " + err.Error(), IsError: true}, nil
 	}
-	tctx, cancel := context.WithTimeout(context.WithValue(ctx, keyCall, call.ID), 2*time.Minute)
+	// The tool's own timeout governs; this is only a backstop, so it must be
+	// longer than any timeout a tool can be configured with.
+	tctx, cancel := context.WithTimeout(context.WithValue(ctx, keyCall, call.ID), 15*time.Minute)
 	defer cancel()
 	content, err := runTool(tctx, tool, call.Args)
 	res := ToolResult{CallID: call.ID, Name: tool.Name, Content: content}
@@ -615,6 +696,17 @@ func (a *Agent) models(o runOptions) []Model {
 	return out
 }
 
+// withoutInterrupt drops the interrupt for a call that has now run.
+func withoutInterrupt(in []Interrupt, callID string) []Interrupt {
+	out := in[:0:0]
+	for _, x := range in {
+		if x.CallID != callID {
+			out = append(out, x)
+		}
+	}
+	return out
+}
+
 func (a *Agent) saveSession(ctx context.Context, sess *Session, msgs []Message, o runOptions) error {
 	if o.thread == "" {
 		return nil
@@ -657,7 +749,24 @@ func (a *Agent) audit(ctx context.Context, o runOptions, kind, name, detail stri
 	a.auditMu.Unlock()
 	if err != nil {
 		logf(a.cfg, "audit: %v", err)
+		a.auditMu.Lock()
+		if a.auditErr == nil {
+			a.auditErr = err
+		}
+		a.auditMu.Unlock()
 	}
+}
+
+// auditGate stops the run once the audit log has failed. An action that
+// cannot be recorded must not happen, and a log that stops taking entries
+// cannot prove what the agent did.
+func (a *Agent) auditGate() error {
+	a.auditMu.Lock()
+	defer a.auditMu.Unlock()
+	if a.auditErr != nil {
+		return fmt.Errorf("kritrim: audit log failed, run stopped: %w", a.auditErr)
+	}
+	return nil
 }
 
 func (a *Agent) auditModel(ctx context.Context, o runOptions, total Usage, resp *Response) {

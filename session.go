@@ -44,24 +44,115 @@ type memSessions struct {
 	m  map[string]*Session
 }
 
+// copySession returns a copy a caller can change freely. Nested maps and
+// slices are copied too: a hook or tool that edits ToolCall.Args must not
+// edit the stored session, and a shared map read while another run writes it
+// is a fatal error in Go, which recover cannot catch.
 func copySession(v *Session) *Session {
 	cp := *v
-	cp.Messages = append([]Message(nil), v.Messages...)
-	cp.Pending = append([]Interrupt(nil), v.Pending...)
+	cp.Messages = copyMessages(v.Messages)
+	cp.Pending = make([]Interrupt, len(v.Pending))
+	for i, in := range v.Pending {
+		cp.Pending[i] = copyInterrupt(in)
+	}
 	if v.Values != nil {
 		cp.Values = make(map[string]any, len(v.Values))
 		for k, x := range v.Values {
-			cp.Values[k] = x
+			cp.Values[k] = deepCopyAny(x)
 		}
 	}
 	if v.Paused != nil {
 		p := *v.Paused
-		p.Interrupts = append([]Interrupt(nil), v.Paused.Interrupts...)
-		p.Calls = append([]ToolCall(nil), v.Paused.Calls...)
+		p.Assistant = copyMessage(v.Paused.Assistant)
+		p.Calls = copyCalls(v.Paused.Calls)
 		p.Results = append([]ToolResult(nil), v.Paused.Results...)
+		p.Interrupts = make([]Interrupt, len(v.Paused.Interrupts))
+		for i, in := range v.Paused.Interrupts {
+			p.Interrupts[i] = copyInterrupt(in)
+		}
 		cp.Paused = &p
 	}
 	return &cp
+}
+
+func copyMessages(in []Message) []Message {
+	if in == nil {
+		return nil
+	}
+	out := make([]Message, len(in))
+	for i, m := range in {
+		out[i] = copyMessage(m)
+	}
+	return out
+}
+
+func copyMessage(m Message) Message {
+	m.ToolCalls = copyCalls(m.ToolCalls)
+	if m.Images != nil {
+		m.Images = make([]Image, len(m.Images))
+		for i, img := range m.Images {
+			img.Data = append([]byte(nil), img.Data...)
+			m.Images[i] = img
+		}
+	}
+	return m
+}
+
+func copyCalls(in []ToolCall) []ToolCall {
+	if in == nil {
+		return nil
+	}
+	out := make([]ToolCall, len(in))
+	for i, c := range in {
+		c.Args = deepCopyAny(c.Args).(map[string]any)
+		out[i] = c
+	}
+	return out
+}
+
+func copyInterrupt(in Interrupt) Interrupt {
+	if in.Args != nil {
+		in.Args = deepCopyAny(in.Args).(map[string]any)
+	}
+	return in
+}
+
+// deepCopyAny copies the maps and slices inside a JSON-like value. Other
+// values are immutable here and are returned as they are.
+func deepCopyAny(v any) any {
+	switch x := v.(type) {
+	case map[string]any:
+		if x == nil {
+			return x
+		}
+		m := make(map[string]any, len(x))
+		for k, e := range x {
+			m[k] = deepCopyAny(e)
+		}
+		return m
+	case []any:
+		if x == nil {
+			return x
+		}
+		s := make([]any, len(x))
+		for i, e := range x {
+			s[i] = deepCopyAny(e)
+		}
+		return s
+	case []string:
+		return append([]string(nil), x...)
+	case map[string]string:
+		if x == nil {
+			return x
+		}
+		m := make(map[string]string, len(x))
+		for k, e := range x {
+			m[k] = e
+		}
+		return m
+	default:
+		return v
+	}
 }
 
 func (s *memSessions) Load(ctx context.Context, id string) (*Session, error) {
@@ -121,6 +212,24 @@ func (s *fileSessions) Load(ctx context.Context, id string) (*Session, error) {
 }
 
 func (s *fileSessions) Save(ctx context.Context, v *Session) error {
+	if err := os.MkdirAll(s.dir, 0o700); err != nil {
+		return err
+	}
+	// The lock covers the version check through the rename, so two writers
+	// cannot both pass the check on the same version. It is taken on the
+	// directory, which excludes other goroutines and processes and creates no
+	// extra files. Saves to one directory are serialized, which is brief.
+	dirLock, err := os.Open(s.dir)
+	if err != nil {
+		return err
+	}
+	defer dirLock.Close()
+	unlock, err := lockFile(dirLock)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+
 	cur, err := s.Load(ctx, idOf(v.ID))
 	if err != nil {
 		return err
@@ -137,18 +246,28 @@ func (s *fileSessions) Save(ctx context.Context, v *Session) error {
 		v.Version = cur.Version + 1
 	}
 	v.Updated = now()
-	if err := os.MkdirAll(s.dir, 0o700); err != nil {
-		return err
-	}
 	b, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
 		return err
 	}
-	tmp := s.path(idOf(v.ID)) + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+	// A unique temp file per write, so writers never share one.
+	tmp, err := os.CreateTemp(s.dir, filepath.Base(s.path(idOf(v.ID)))+".*.tmp")
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, s.path(idOf(v.ID)))
+	defer os.Remove(tmp.Name()) // no-op once renamed
+	if _, err := tmp.Write(b); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), s.path(idOf(v.ID)))
 }
 
 func idOf(id string) string {

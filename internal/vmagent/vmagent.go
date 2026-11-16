@@ -19,6 +19,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/ganeshdipdumbare/kritrim/internal/boxutil"
 )
 
 // Port is the vsock port the agent listens on.
@@ -90,10 +92,28 @@ func ReadFrame(r io.Reader) (byte, []byte, error) {
 	return h[0], b, nil
 }
 
+// maxReply bounds what one reply carries: a command's output, or a file read.
+const maxReply = boxutil.MaxOutput
+
+// maxConns bounds connections served at once, so a flood of them cannot
+// exhaust the guest's memory.
+const maxConns = 64
+
+var slots = make(chan struct{}, maxConns)
+
 // Serve handles one connection. env is the environment every command
-// starts from (the agent passes a minimal one).
+// starts from (the agent passes a minimal one). A panic in one connection is
+// logged and ends that connection only; the agent and its other sessions
+// keep running.
 func Serve(conn io.ReadWriteCloser, env []string) {
+	slots <- struct{}{}
+	defer func() { <-slots }()
 	defer conn.Close()
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Fprintf(os.Stderr, "kritrim-vmagent: connection failed: %v\n", r)
+		}
+	}()
 	br := bufio.NewReaderSize(conn, 64*1024)
 	line, err := readLine(br)
 	if err != nil {
@@ -110,7 +130,7 @@ func Serve(conn io.ReadWriteCloser, env []string) {
 	case "exec":
 		writeReply(conn, execute(req, env))
 	case "read":
-		b, err := os.ReadFile(req.Path)
+		b, err := readFileCapped(req.Path)
 		if err != nil {
 			writeReply(conn, Reply{Error: err.Error()})
 			return
@@ -147,6 +167,37 @@ func writeReply(w io.Writer, r Reply) {
 	_, _ = w.Write(append(b, '\n'))
 }
 
+// readFileCapped reads a regular file of at most maxReply bytes. Devices and
+// endless files such as /dev/zero are refused rather than read into memory.
+func readFileCapped(path string) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !fi.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s is not a regular file", path)
+	}
+	if fi.Size() > maxReply {
+		return nil, fmt.Errorf("%s is larger than %d bytes", path, maxReply)
+	}
+	b, err := io.ReadAll(io.LimitReader(f, maxReply+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(b) > maxReply {
+		return nil, fmt.Errorf("%s is larger than %d bytes", path, maxReply)
+	}
+	return b, nil
+}
+
+// command builds the process. It runs in its own process group, so a timeout
+// or a kill ends its children too, and a grandchild holding the output pipes
+// cannot hold the reply forever.
 func command(ctx context.Context, req Request, env []string) (*exec.Cmd, error) {
 	if len(req.Argv) == 0 {
 		return nil, errors.New("empty command")
@@ -154,6 +205,12 @@ func command(ctx context.Context, req Request, env []string) (*exec.Cmd, error) 
 	cmd := exec.CommandContext(ctx, req.Argv[0], req.Argv[1:]...)
 	cmd.Dir = req.Dir
 	cmd.Env = append(append([]string(nil), env...), req.Env...)
+	setProcessGroup(cmd)
+	cmd.Cancel = func() error {
+		killGroup(cmd)
+		return nil
+	}
+	cmd.WaitDelay = 5 * time.Second
 	return cmd, nil
 }
 
@@ -171,10 +228,12 @@ func execute(req Request, env []string) Reply {
 	if req.HasIn {
 		cmd.Stdin = bytes.NewReader(req.Stdin)
 	}
-	var out, errb bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &out, &errb
+	// Output is capped: a command that prints without end must not size the
+	// guest's memory.
+	out, errb := boxutil.NewCapped(), boxutil.NewCapped()
+	cmd.Stdout, cmd.Stderr = out, errb
 	err = cmd.Run()
-	r := Reply{Stdout: out.Bytes(), Stderr: errb.Bytes()}
+	r := Reply{Stdout: []byte(out.String()), Stderr: []byte(errb.String())}
 	var ee *exec.ExitError
 	switch {
 	case errors.As(err, &ee):
@@ -215,9 +274,13 @@ func start(req Request, env []string, in io.Reader, conn io.Writer) {
 		send(FrameStartErr, []byte(err.Error()))
 		return
 	}
-	stdin, _ := cmd.StdinPipe()
-	stdout, _ := cmd.StdoutPipe()
-	stderr, _ := cmd.StderrPipe()
+	stdin, err1 := cmd.StdinPipe()
+	stdout, err2 := cmd.StdoutPipe()
+	stderr, err3 := cmd.StderrPipe()
+	if err := errors.Join(err1, err2, err3); err != nil {
+		send(FrameStartErr, []byte(err.Error()))
+		return
+	}
 	if err := cmd.Start(); err != nil {
 		send(FrameStartErr, []byte(err.Error()))
 		return
@@ -227,7 +290,7 @@ func start(req Request, env []string, in io.Reader, conn io.Writer) {
 			typ, b, err := ReadFrame(in)
 			if err != nil {
 				// The host went away: nothing will read the output.
-				_ = cmd.Process.Kill()
+				killGroup(cmd)
 				return
 			}
 			switch typ {
@@ -236,7 +299,7 @@ func start(req Request, env []string, in io.Reader, conn io.Writer) {
 			case FrameClose:
 				_ = stdin.Close()
 			case FrameKill:
-				_ = cmd.Process.Kill()
+				killGroup(cmd)
 			}
 		}
 	}()
@@ -244,6 +307,11 @@ func start(req Request, env []string, in io.Reader, conn io.Writer) {
 	pump := func(r io.Reader, typ byte) {
 		defer wg.Done()
 		buf := make([]byte, 32*1024)
+		defer func() {
+			if r := recover(); r != nil {
+				killGroup(cmd)
+			}
+		}()
 		for {
 			n, err := r.Read(buf)
 			if n > 0 {

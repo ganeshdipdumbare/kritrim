@@ -73,7 +73,9 @@ func (s *memDedupe) Claim(ctx context.Context, id, print string, expires time.Ti
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := time.Now()
-	if r, ok := s.m[id]; ok && (now.Before(r.expires) || !r.done) {
+	// A claim is live until it expires. An expired one that never finished
+	// (its leader hung or died) is taken over, as the SQL store does.
+	if r, ok := s.m[id]; ok && now.Before(r.expires) {
 		if r.print != print {
 			return Claim{}, ErrConflict
 		}
@@ -81,7 +83,7 @@ func (s *memDedupe) Claim(ctx context.Context, id, print string, expires time.Ti
 	}
 	if len(s.m) >= s.max {
 		for k, r := range s.m {
-			if r.done && now.After(r.expires) {
+			if now.After(r.expires) {
 				delete(s.m, k)
 			}
 		}
@@ -93,10 +95,25 @@ func (s *memDedupe) Claim(ctx context.Context, id, print string, expires time.Ti
 	return Claim{Won: true}, nil
 }
 
+// fenceKey carries the expiry of the claim a leader holds. Release and Complete
+// act only on the claim with that expiry, so a leader whose claim expired
+// cannot delete or finish a newer leader's claim.
+type fenceKey struct{}
+
+func withFence(ctx context.Context, expires time.Time) context.Context {
+	return context.WithValue(ctx, fenceKey{}, expires.UnixMilli())
+}
+
+// fenced reports whether ctx holds the claim with this expiry, or no fence.
+func fenced(ctx context.Context, expires time.Time) bool {
+	f, ok := ctx.Value(fenceKey{}).(int64)
+	return !ok || f == expires.UnixMilli()
+}
+
 func (s *memDedupe) Complete(ctx context.Context, id string, result []byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if r, ok := s.m[id]; ok {
+	if r, ok := s.m[id]; ok && fenced(ctx, r.expires) {
 		r.done, r.result = true, result
 	}
 	return nil
@@ -105,7 +122,7 @@ func (s *memDedupe) Complete(ctx context.Context, id string, result []byte) erro
 func (s *memDedupe) Release(ctx context.Context, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if r, ok := s.m[id]; ok && !r.done {
+	if r, ok := s.m[id]; ok && !r.done && fenced(ctx, r.expires) {
 		delete(s.m, id)
 	}
 	return nil
@@ -225,17 +242,33 @@ func (s *sqlDedupe) sweep(ctx context.Context, now time.Time) {
 		s.mu.Unlock()
 		return
 	}
+	s.mu.Unlock()
+	// Expired rows go whether or not they finished: a claim past its expiry is
+	// takeover-eligible anyway, and unfinished ones would otherwise pile up
+	// forever. The sweep time is recorded only once the delete has run, so a
+	// failed or canceled sweep is tried again on the next claim.
+	if _, err := s.db.ExecContext(ctx, s.q(fmt.Sprintf("DELETE FROM %s WHERE expires < ?", s.cfg.Table)), now.UnixMilli()); err != nil {
+		return
+	}
+	s.mu.Lock()
 	s.swept = now
 	s.mu.Unlock()
-	_, _ = s.db.ExecContext(ctx, s.q(fmt.Sprintf("DELETE FROM %s WHERE expires < ? AND done = 1", s.cfg.Table)), now.UnixMilli())
 }
 
 func (s *sqlDedupe) Complete(ctx context.Context, id string, result []byte) error {
+	if f, ok := ctx.Value(fenceKey{}).(int64); ok {
+		_, err := s.db.ExecContext(ctx, s.q(fmt.Sprintf("UPDATE %s SET done = 1, result = ? WHERE id = ? AND expires = ?", s.cfg.Table)), string(result), s.key(id), f)
+		return err
+	}
 	_, err := s.db.ExecContext(ctx, s.q(fmt.Sprintf("UPDATE %s SET done = 1, result = ? WHERE id = ?", s.cfg.Table)), string(result), s.key(id))
 	return err
 }
 
 func (s *sqlDedupe) Release(ctx context.Context, id string) error {
+	if f, ok := ctx.Value(fenceKey{}).(int64); ok {
+		_, err := s.db.ExecContext(ctx, s.q(fmt.Sprintf("DELETE FROM %s WHERE id = ? AND done = 0 AND expires = ?", s.cfg.Table)), s.key(id), f)
+		return err
+	}
 	_, err := s.db.ExecContext(ctx, s.q(fmt.Sprintf("DELETE FROM %s WHERE id = ? AND done = 0", s.cfg.Table)), s.key(id))
 	return err
 }

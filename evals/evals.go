@@ -235,7 +235,22 @@ func (c *dirCache) Save(key string, r *kritrim.Result) {
 	if err != nil {
 		return
 	}
-	_ = os.WriteFile(c.path(key), b, 0o600)
+	// Write to a unique temp file and rename: concurrent writers must never
+	// leave a torn entry where a reader would find it.
+	tmp, err := os.CreateTemp(filepath.Dir(c.path(key)), filepath.Base(c.path(key))+".*.tmp")
+	if err != nil {
+		return
+	}
+	if _, err := tmp.Write(b); err != nil {
+		tmp.Close()
+		_ = os.Remove(tmp.Name())
+		return
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmp.Name())
+		return
+	}
+	_ = os.Rename(tmp.Name(), c.path(key))
 }
 
 // Summary renders one line per case.

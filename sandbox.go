@@ -45,6 +45,9 @@ type ExecRequest struct {
 	Env     []string
 	Stdin   []byte
 	Timeout time.Duration
+	// Allow, when non-nil, lists the commands (argv[0]) the machine may run;
+	// the Local machine refuses others. The agent always sets it.
+	Allow []string
 }
 
 // ExecResult is the outcome of Exec.
@@ -60,6 +63,8 @@ type StartRequest struct {
 	Command []string
 	Dir     string
 	Env     []string
+	// Allow, when non-nil, lists the commands the Local machine may start.
+	Allow []string
 }
 
 // Process is a long-lived process inside a machine.

@@ -199,3 +199,56 @@ func BenchmarkSemanticSearch1000(b *testing.B) {
 		}
 	}
 }
+
+// blockingEmbedder stalls the first Embed call until released, so a test can
+// change the store while a Search is embedding.
+type blockingEmbedder struct {
+	topicEmbedder
+	started chan struct{}
+	release chan struct{}
+	once    atomic.Bool
+}
+
+func (e *blockingEmbedder) Embed(ctx context.Context, texts []string) ([][]float32, error) {
+	if e.once.CompareAndSwap(false, true) {
+		close(e.started)
+		<-e.release
+	}
+	return e.topicEmbedder.Embed(ctx, texts)
+}
+
+// A key deleted while Search embeds it must not keep a vector: the vector
+// would outlive the memory on disk.
+func TestSemanticDeleteDuringSearchLeavesNoVector(t *testing.T) {
+	ctx := context.Background()
+	base := NewMemory()
+	emb := &blockingEmbedder{started: make(chan struct{}), release: make(chan struct{})}
+	st, err := NewSemantic(base, emb, SemanticConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Written to the base directly, so the semantic layer has no vector yet.
+	if err := base.Put(ctx, "diet", "vegetarian pasta"); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := st.Search(ctx, "dinner", 5)
+		done <- err
+	}()
+	<-emb.started
+	if err := st.Delete(ctx, "diet"); err != nil {
+		t.Fatal(err)
+	}
+	close(emb.release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	s := st.(*semantic)
+	s.mu.Lock()
+	_, leaked := s.vecs["diet"]
+	s.mu.Unlock()
+	if leaked {
+		t.Fatal("vector for a deleted memory was kept")
+	}
+}

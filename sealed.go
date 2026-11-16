@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -14,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 )
 
 // runParams is what the host sends to the box to start a run.
@@ -39,6 +41,7 @@ type activeRun struct {
 	roles             []string
 	grants            map[string]grant // call id -> approved risky call
 	used              int              // tokens served to this run
+	approvals         int              // approval requests the box made this run
 
 	ctx    context.Context // canceled when the run ends
 	cancel context.CancelFunc
@@ -321,6 +324,12 @@ func (b *boxHost) http(ctx context.Context, raw json.RawMessage) (any, error) {
 	defer release()
 	r.AllowHosts = allow
 	r.sensitive = false
+	// secret:// would make the host read its own environment for the box.
+	// A box gets secrets only through placeholders from the secret RPC,
+	// which the allowlist and host bindings govern.
+	if refersToHostSecret(r) {
+		return nil, errors.New("kritrim: a sealed box may not name host secrets with secret://; use the secret RPC")
+	}
 	if err := b.substitute(&r); err != nil {
 		return nil, err
 	}
@@ -335,6 +344,20 @@ func (b *boxHost) http(ctx context.Context, raw json.RawMessage) (any, error) {
 		}
 	}
 	return resp, nil
+}
+
+// refersToHostSecret reports whether any part of the request uses the
+// secret:// form that hostEnv resolves from the host environment.
+func refersToHostSecret(r httpRequest) bool {
+	if strings.Contains(r.URL, "secret://") || bytes.Contains(r.Body, []byte("secret://")) {
+		return true
+	}
+	for _, v := range r.Headers {
+		if strings.Contains(v, "secret://") {
+			return true
+		}
+	}
+	return false
 }
 
 func (b *boxHost) substitute(r *httpRequest) error {
@@ -363,6 +386,12 @@ func (b *boxHost) substitute(r *httpRequest) error {
 		}
 		r.Body = bytes.ReplaceAll(r.Body, []byte(ph), []byte(bind.value))
 	}
+	// A secret's value is spliced into the URL. A value holding URL syntax
+	// ("@", "/", "?") could move the request to another host after the host
+	// check above, so the host must still be the one that was checked.
+	if nu, err := url.Parse(r.URL); err != nil || !strings.EqualFold(nu.Hostname(), host) {
+		return fmt.Errorf("kritrim: a secret may not change the request host")
+	}
 	for ph := range b.secrets {
 		if strings.Contains(r.URL, ph) || strings.Contains(string(r.Body), ph) {
 			return fmt.Errorf("kritrim: secret %q may not be sent to %q", ph, host)
@@ -383,6 +412,13 @@ func (b *boxHost) secret(ctx context.Context, raw json.RawMessage) (any, error) 
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return nil, err
 	}
+	// Bindings only come into being during a run the host is serving, so a
+	// box cannot probe or seed them between runs.
+	ctx, _, release, err := b.acquire(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	hosts, ok := b.cfg.Secrets[p.Name]
 	if !ok {
 		return nil, fmt.Errorf("kritrim: secret %q is not allowed in a sealed agent", p.Name)
@@ -446,12 +482,39 @@ func (b *boxHost) tool(ctx context.Context, raw json.RawMessage) (any, error) {
 	if err := t.checkArgs(p.Args); err != nil {
 		return nil, err
 	}
+	// The host's own hooks run here, with the run's identity. The box is
+	// untrusted, and policy (authz, guard) is a hook, so it must see this
+	// call on the host. A hook may deny the call but may not change its
+	// arguments: those were the arguments the host approved.
+	before := canonicalArgs(p.Args)
+	te := &ToolEvent{Call: &ToolCall{ID: p.Call, Name: t.Name, Args: p.Args}, Args: p.Args}
+	if h := b.a.cfg.Hooks.BeforeTool; h != nil {
+		if err := h(ctx, te); err != nil {
+			b.a.audit(ctx, o, "denied", t.Name, "blocked by hook: "+err.Error())
+			return nil, fmt.Errorf("kritrim: blocked: %w", err)
+		}
+		if te.Deny != "" {
+			b.a.audit(ctx, o, "denied", t.Name, "blocked by hook: "+te.Deny)
+			return nil, fmt.Errorf("kritrim: blocked: %s", te.Deny)
+		}
+		if te.Swap != "" && te.Swap != t.Name {
+			b.a.audit(ctx, o, "denied", t.Name, "swap refused for a bridged call")
+			return nil, errors.New("kritrim: a bridged call cannot be swapped")
+		}
+	}
+	if canonicalArgs(p.Args) != before || (te.Args != nil && canonicalArgs(te.Args) != before) {
+		b.a.audit(ctx, o, "denied", t.Name, "hook changed the arguments of a bridged call")
+		return nil, errors.New("kritrim: a hook changed the arguments of a bridged call")
+	}
 	ctx = context.WithValue(ctx, keyEnv, b.a.env)
 	out, err := runTool(ctx, t, p.Args)
 	if err != nil {
 		return nil, err
 	}
 	out = b.a.redactor.redact(out)
+	if h := b.a.cfg.Hooks.AfterTool; h != nil {
+		h(ctx, &ToolEvent{Call: te.Call, Result: &ToolResult{CallID: p.Call, Name: t.Name, Content: out}})
+	}
 	b.a.audit(ctx, o, "tool", t.Name,
 		"args="+b.a.redactor.redact(jsonString(p.Args))+" result="+truncate(out, 2000))
 	return out, nil
@@ -481,8 +544,20 @@ func (b *boxHost) approve(ctx context.Context, raw json.RawMessage) (any, error)
 	if _, ok := b.a.tool(p.Req.Tool); !ok {
 		return Reject("unknown tool"), nil
 	}
-	// The approver sees a message built by the host, not text from the box.
-	p.Req.Message = fmt.Sprintf("Approve %s with %s?", p.Req.Tool, jsonString(p.Req.Args))
+	// A box gets a few approval requests per run. More than that is a box
+	// trying to wear the approver down.
+	b.cmu.Lock()
+	r.approvals++
+	over := r.approvals > maxBoxApprovals
+	b.cmu.Unlock()
+	if over {
+		return Reject("too many approval requests in this run"), nil
+	}
+	// The approver sees a message the host builds, not text from the box:
+	// control characters are stripped, the text is capped, and the arguments
+	// are named by a hash so a lookalike cannot stand in for them.
+	p.Req.Message = fmt.Sprintf("Approve %s with %s? (args sha256:%s)", p.Req.Tool,
+		approvalText(jsonString(p.Req.Args)), argsDigest(p.Req.Args))
 	if b.a.cfg.Approve == nil {
 		return Reject("approval required and Config.Approve is nil"), nil
 	}
@@ -496,9 +571,37 @@ func (b *boxHost) approve(ctx context.Context, raw json.RawMessage) (any, error)
 	return dec, nil
 }
 
+// maxBoxApprovals caps the approval requests a box may make in one run.
+const maxBoxApprovals = 20
+
+// approvalText strips control characters and caps the length of text shown
+// to an approver.
+func approvalText(s string) string {
+	var b strings.Builder
+	n := 0
+	for _, r := range s {
+		if unicode.IsControl(r) {
+			r = ' '
+		}
+		if n >= 512 {
+			b.WriteString("...")
+			break
+		}
+		b.WriteRune(r)
+		n++
+	}
+	return b.String()
+}
+
+// argsDigest identifies an argument set for an approver.
+func argsDigest(args map[string]any) string {
+	sum := sha256.Sum256([]byte(canonicalArgs(args)))
+	return hex.EncodeToString(sum[:8])
+}
+
 // grant records an approved call so the bridged tool may run once.
 func (b *boxHost) grant(r *activeRun, callID, tool string, args map[string]any, dec Decision) {
-	if callID == "" || dec.Pause || dec.Respond != "" || (!dec.Approve && dec.Args == nil) {
+	if callID == "" || dec.Pause || dec.Respond != "" || !dec.Approve {
 		return
 	}
 	if dec.Args != nil {

@@ -77,12 +77,28 @@ type fileAudit struct {
 	key    []byte
 	prev   string
 	seq    int
-	loaded bool // seq and prev reflect the file on disk
+	size   int64 // file size after our last write
+	loaded bool  // seq and prev reflect the file on disk
+}
+
+// maxAuditField caps a single entry field. The reader parses a line with a
+// 4 MiB limit, so an entry the writer accepted must always fit it.
+// Four capped fields at 512 KiB each stay under the reader limit with room
+// for the rest of the entry.
+const maxAuditField = 512 << 10
+
+func capField(s string) string {
+	if len(s) > maxAuditField {
+		return s[:maxAuditField] + "...[truncated]"
+	}
+	return s
 }
 
 func (a *fileAudit) Write(ctx context.Context, e Entry) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	e.Kind, e.Name, e.Detail = capField(e.Kind), capField(e.Name), capField(e.Detail)
+	e.Thread, e.User = capField(e.Thread), capField(e.User)
 	if a.key != nil && len(a.key) < 32 {
 		return errAuditKey
 	}
@@ -94,7 +110,21 @@ func (a *fileAudit) Write(ctx context.Context, e Entry) error {
 		return err
 	}
 	defer f.Close()
-	if !a.loaded {
+	// Another process may append to the same log. The lock makes load,
+	// append and head update one step for every writer.
+	unlock, err := lockFile(f)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	fi, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	// Reload and re-verify whenever the file is not what we last wrote, so
+	// the chain position comes from disk and not from memory.
+	if !a.loaded || fi.Size() != a.size {
+		a.loaded = false
 		if err := a.load(); err != nil {
 			return err
 		}
@@ -118,12 +148,14 @@ func (a *fileAudit) Write(ctx context.Context, e Entry) error {
 	if err != nil {
 		return err
 	}
-	if _, err := f.Write(append(b, '\n')); err != nil {
+	line := append(b, '\n')
+	if _, err := f.Write(line); err != nil {
 		return err
 	}
 	if err := f.Sync(); err != nil {
 		return err
 	}
+	a.size = fi.Size() + int64(len(line))
 	if a.key != nil {
 		if err := writeHead(a.path, a.key, e.Seq, e.Hash); err != nil {
 			return err
@@ -138,6 +170,7 @@ func (a *fileAudit) Write(ctx context.Context, e Entry) error {
 // and resumes after its last entry. A log that fails verification, was
 // written with another key, or lost its head is never extended.
 func (a *fileAudit) load() error {
+	a.seq, a.prev = 0, ""
 	last, err := lastEntry(a.path)
 	if err != nil {
 		return fmt.Errorf("kritrim: audit log %s: %w", a.path, err)
@@ -184,11 +217,24 @@ func headMAC(key []byte, seq int, hash string) string {
 
 func writeHead(path string, key []byte, seq int, hash string) error {
 	b, _ := json.Marshal(auditHead{Seq: seq, Hash: hash, MAC: headMAC(key, seq, hash)})
-	tmp := path + ".head.tmp"
-	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+	// A unique temp file per write: a fixed name lets two writers interleave.
+	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".head.*")
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, path+".head")
+	defer os.Remove(tmp.Name()) // no-op once renamed
+	if _, err := tmp.Write(b); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), path+".head")
 }
 
 func lastEntry(path string) (*Entry, error) {
@@ -220,6 +266,10 @@ func lastEntry(path string) (*Entry, error) {
 // VerifyAudit checks that every entry's hash and prev link are intact. With
 // AuditKey it also checks every HMAC and the signed head, so a rewritten or
 // truncated log fails.
+//
+// Known limit: the head is written after the entry. If the process stops
+// between the two, the head is one entry behind and that entry can be
+// removed without detection. Only the last entry is exposed this way.
 func VerifyAudit(path string, opts ...AuditOption) error {
 	var o auditOptions
 	for _, fn := range opts {

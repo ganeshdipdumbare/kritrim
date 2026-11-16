@@ -4,6 +4,179 @@ All notable changes. kritrim follows [semantic versioning](https://semver.org)
 from v1.0.0 on; see [docs/API.md](docs/API.md) for what the promise covers and
 [docs/MIGRATING.md](docs/MIGRATING.md) for moving from v0.9.
 
+## Unreleased
+
+### Fixed
+
+- **`Local()` is no longer treated as a sandbox.** It runs on the host, so the
+  python tool now needs `PythonConfig.AllowUnsafeHost` with it, as the docs
+  describe. Previously `Config.Sandbox: Local()` skipped that guard.
+- **Sealed boxes cannot read host secrets through `secret://` references** in
+  an HTTP request. Boxes get secrets only through the placeholder `secret` RPC.
+- **Signed sessions reject a record copied under another thread's key.** The
+  signature already covered the record's own ID, but `Load` did not check it
+  against the requested ID.
+- **SSH sandbox quotes environment values** and refuses entries that are not
+  `NAME=value`. A value containing shell metacharacters could run commands on
+  the remote host, and values with spaces were split.
+- **Resume decisions apply once, to the call they were given for.** A call that
+  reused an approved call ID with other arguments used to run unapproved.
+- **Audit failures stop the agent.** A failed audit write refuses the next
+  model or tool step. Writers share one log under an advisory lock, and the head
+  file gets a unique temp name.
+- **File tools keep their root with `Local()`.** The Local sandbox no longer
+  bypasses the file root jail. Relative sandbox roots are refused.
+- **Sealed boxes cannot use `secret://` in HTTP requests**, and the box's
+  request is refused rather than resolved from the host.
+- **Output from sandboxes is capped** (8 MiB per stream), and streamed output
+  keeps long lines whole instead of dropping them past 64 KiB.
+- **Docker env values stay off the command line.** Names go on argv, and values
+  go in the docker client's environment. Docker stderr has the values removed.
+  Docker requests honor `ExecRequest.Timeout`.
+- **Docker and microsandbox refuse names that start with `-`** for images,
+  containers and capabilities.
+- **SSH sandbox sets the file mode on write** and refuses more local-code
+  options (`PKCS11Provider`, `SecurityKeyProvider`, `Match`, `Include`).
+- **MCP**: secret headers are resolved per request, and the caller's header map
+  is never written to. Responses are capped at 8 MiB, a too-long SSE frame is an
+  error, and the session ID is guarded for parallel calls.
+- **A2A server**: the message is validated before an agent is created. Store
+  errors fail closed. One run per task at a time. Agents in use are not
+  evicted, and a principal evicts only its own idle contexts. Internal errors
+  are logged, and clients get a generic message.
+- **Signed sessions and file sessions**: `SignedSessions.Load` refuses a record
+  under another thread's key. `FileSessions.Save` is serialized by a directory
+  lock, so concurrent saves cannot both win.
+- **SigV4** signs the canonical query string with RFC 3986 encoding and keeps
+  repeated keys, so requests with spaces or repeated parameters verify.
+- **Dedupe and webhooks**: an expired unfinished claim can be taken over. Runs
+  have a timeout (`WebhookConfig.RunTimeout`, default 10 minutes). Only an
+  over-size body is a 413. A failed read is a 400.
+- **OTLP tracing** no longer leaks a span entry for runs without a run ID.
+  Those runs are not traced.
+- **vmagent unix socket** is owner-only, and a live socket is not unlinked.
+- **CI** pins its actions to commit SHAs and its Go tools to versions.
+
+- **Sealed boxes run the host's hooks on bridged calls.** Policy hooks (authz,
+  guard) see a call the box makes. A hook may deny it but may not change its
+  arguments. Approval requests are capped at 20 per run, their text is
+  sanitized, and the `secret` RPC needs an active run.
+- **A risky call that a hook changes after approval is blocked**, in place or
+  by replacement.
+- **Runs checkpoint as they go.** The session is saved after each tool result,
+  so a retry after a failure does not run calls that already ran.
+- **Idempotency keys are scoped to the caller's identity and thread**, and an
+  in-flight run's key never expires.
+- **MemorySessions copies nested data.** Editing a loaded session no longer
+  edits the stored one.
+- **Audit fields are capped at 512 KiB**, so the writer never accepts an entry
+  the reader cannot parse.
+- **Dedupe release and complete are fenced by the claim's expiry**, so a stale
+  leader cannot delete a newer claim. `DedupeTTL` is at least
+  `RunTimeout + 2*Tolerance`.
+- **A2A**: one run per context as well as per task; a per-principal cap on runs
+  in flight (`ServerConfig.MaxRunsPerPrincipal`, default 8); task updates are
+  serialized; history and artifacts are capped per task.
+- **vmagent**: replies and reads are capped, a timeout kills the whole process
+  group, a panic ends only its connection, `start` checks its pipes, and only
+  the host CID may connect over vsock. Accept errors are retried, and the
+  non-unix listener fails closed.
+- **Local sandbox**: `ExecStream` and `Start` enforce `Allow` (`StartRequest`
+  gained an `Allow` field).
+- **Docker** refuses `DOCKER_*` names in sandbox env. **SSH** refuses a Host or
+  IdentityFile that starts with `-`.
+- **kritrim-evals** kills a case's whole process group on timeout.
+
+- **Docker sandbox env goes through a private `--env-file`** (0600, removed
+  after the call or once a started process ends). Values stay off argv and out
+  of the docker client's own environment, so a name such as `HOME` or `PATH`
+  cannot change how the client runs. Values with newlines are refused.
+- **Docker file reads through exec return raw bytes** and fail rather than
+  return a file cut at the output limit.
+- **A2A**: each principal holds at most its share of cached contexts
+  (`ServerConfig.MaxContextsPerPrincipal`, default MaxContexts/10), so one
+  principal cannot fill the cache. A running task owned by someone else answers
+  "task not found", so task IDs in use are not revealed.
+- **Webhook**: `WebhookConfig.BindPath` makes the signature cover the request
+  path (`trigger.SignPath`), so one secret shared by several endpoints cannot
+  replay a delivery across them. Off by default for compatibility.
+- **SQL dedupe** sweeps expired unfinished rows, not only finished ones.
+- **OTLP** tracks each tool call's span by call ID, so parallel calls keep their
+  spans.
+- **vmagent** no longer changes the socket's mode by path, so a symlink planted
+  there cannot redirect it.
+
+- **SSH sandbox**: `Read` returns raw bytes and fails past the output limit;
+  `Write` caps its stderr; `ExecStream` honors the request timeout; `OpenConfig.Env`
+  reaches commands; an image or network setting is refused rather than ignored.
+  The option denylist adds tunnel, agent-forwarding and host-key directives, and
+  refuses `StrictHostKeyChecking` set to a weaker value.
+- **microsandbox**: output is capped; a command without a timeout gets a
+  10-minute default; use after `Close` returns an error.
+- **Parallel tool calls** consume their decisions under a lock. Two calls with
+  one call ID could otherwise write the same map at once.
+- **MCP** drops its pending entry when a call times out or is canceled.
+- **Semantic memory** does not overwrite a newer vector with one embedded from
+  text that has since changed.
+- **Secrets** cannot change the request host: a value with URL syntax is refused.
+- **Docker**: the env file is removed when a started process is killed.
+- **Off unix**, session and audit locks serialize goroutines in one process.
+- **Docs** palette keydown handler tolerates a page without the palette.
+
+- **A rejection never runs the tool**, even when it also carries replacement
+  arguments (both in the agent and for sealed bridged calls).
+- **Tool calls get their own timeout.** The two-minute backstop is now 15 minutes,
+  so a tool's configured timeout is what applies.
+- **Webhook**: a duplicate waits no longer than `RunTimeout` (then 503 with
+  `Retry-After`), and the claim is released even when a run hits its timeout.
+- **A2A thread IDs** escape the principal, so principals with colons in their IDs
+  cannot share a thread.
+- **Local sandbox**: `ExecStream` honors the timeout, and `Read` refuses devices
+  and files past the output limit. **Docker** exec has a 10-minute default timeout.
+  Tar entries carry permission bits only.
+- **SSH** creates files with the requested mode (umask set before the write),
+  and the option denylist also covers smartcard and X11 forwarding.
+- **Host stderr** from MCP servers, docker, and microsandbox is sanitized of
+  control characters.
+- **Audit** caps the entry kind too.
+- **SQL dedupe** records a sweep only after it has run.
+- **Evals cache** writes atomically. **Docs** deep links scroll to their anchor.
+- **vmagent** gives up after 100 consecutive accept failures.
+- **Semantic memory** no longer keeps a vector for a key deleted while a
+  `Search` was embedding it.
+- **`WithTools`** rejects an invalid tool or one whose name already exists on
+  the agent, including MCP tools. Before, the new tool was silently shadowed.
+  `Run` and `Stream` return the error.
+
+### Added
+
+- `ExecRequest.Allow`: when set, the Local machine refuses commands outside it.
+  The agent always sets it.
+- `WebhookConfig.RunTimeout`.
+
+### Known limits
+
+- The audit head can lag the log by one entry after a crash. One trailing entry
+  can be removed undetected in that window.
+- Commands are matched by name on the host PATH. Pin absolute paths in the
+  allowlist to avoid a PATH substitution.
+- Docker `Start` is long-lived, so `ExecRequest.Timeout` does not bound it.
+- A direct `Machine` caller that passes no `Allow` is unrestricted on the Local
+  machine. The agent always sets `Allow`. Other machines ignore it.
+- vmagent authenticates the peer by CID only. A boot-time secret is not yet
+  provisioned by the host, and a stale-socket removal has a small residual
+  window.
+- The audit log and the signed session store cannot detect a full rollback to
+  an older consistent copy. That needs an external anchor, such as a signed
+  checkpoint the operator keeps elsewhere.
+- Thread IDs are supplied by the host application. The library does not bind a
+  thread to a user; an app that takes thread IDs from end users must check them.
+- The webhook signature covers the path only when `BindPath` is set.
+- SSH `Close` does not stop remote processes; the local `ssh` client is killed.
+- Brokered HTTP bodies over 8 MiB are cut at the limit without a marker.
+- An MCP stdio server can send messages of any size.
+- Sealed box egress includes every secret's destination host by design.
+
 ## v1.0.0 — 2026-11-14
 
 The stable release. Every item the roadmap listed as open is done, the API is
