@@ -56,6 +56,9 @@ func (a *Agent) run(ctx context.Context, prompt string, emit func(Event), opts .
 	if emit == nil {
 		emit = func(Event) {}
 	}
+	if a.toolErr != nil {
+		return nil, a.toolErr
+	}
 	if a.box != nil {
 		return a.box.run(ctx, prompt, emit, resolveOptions(opts))
 	}

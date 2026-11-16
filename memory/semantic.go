@@ -221,6 +221,13 @@ func (s *semantic) embedMissing(ctx context.Context, items []Item) error {
 		if (old == nil) != !ok || (ok && old != nil && cur.Sum != old.Sum) {
 			continue
 		}
+		// A Delete that ran while we embedded removed the memory. Writing its
+		// vector now would keep the deleted text's vector on disk. Check the
+		// base under s.mu: Put and Delete both update the base before taking
+		// s.mu, so the check sees their result.
+		if v, found := s.base.Get(ctx, k); !found || memoryText(k, v) != texts[i] {
+			continue
+		}
 		s.vecs[k] = vector{Sum: textSum(texts[i]), V: vs[i]}
 	}
 	return s.flush()

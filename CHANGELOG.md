@@ -142,6 +142,11 @@ from v1.0.0 on; see [docs/API.md](docs/API.md) for what the promise covers and
 - **SQL dedupe** records a sweep only after it has run.
 - **Evals cache** writes atomically. **Docs** deep links scroll to their anchor.
 - **vmagent** gives up after 100 consecutive accept failures.
+- **Semantic memory** no longer keeps a vector for a key deleted while a
+  `Search` was embedding it.
+- **`WithTools`** rejects an invalid tool or one whose name already exists on
+  the agent, including MCP tools. Before, the new tool was silently shadowed.
+  `Run` and `Stream` return the error.
 
 ### Added
 
