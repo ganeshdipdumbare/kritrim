@@ -184,11 +184,20 @@ func (s *semantic) Search(ctx context.Context, query string, limit int) ([]Item,
 // that has since changed, in one batch.
 func (s *semantic) embedMissing(ctx context.Context, items []Item) error {
 	var keys, texts []string
+	// seen records the vector each key had when we decided to embed it.
+	seen := map[string]*vector{}
 	s.mu.Lock()
 	for _, it := range items {
 		text := memoryText(it.Key, it.Value)
-		if v, ok := s.vecs[it.Key]; !ok || v.Sum != textSum(text) {
+		v, ok := s.vecs[it.Key]
+		if !ok || v.Sum != textSum(text) {
 			keys, texts = append(keys, it.Key), append(texts, text)
+			if ok {
+				c := v
+				seen[it.Key] = &c
+			} else {
+				seen[it.Key] = nil
+			}
 		}
 	}
 	s.mu.Unlock()
@@ -205,6 +214,13 @@ func (s *semantic) embedMissing(ctx context.Context, items []Item) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for i, k := range keys {
+		// A Put that ran while we embedded already wrote a vector for newer
+		// text. Ours is stale: keep theirs.
+		cur, ok := s.vecs[k]
+		old := seen[k]
+		if (old == nil) != !ok || (ok && old != nil && cur.Sum != old.Sum) {
+			continue
+		}
 		s.vecs[k] = vector{Sum: textSum(texts[i]), V: vs[i]}
 	}
 	return s.flush()

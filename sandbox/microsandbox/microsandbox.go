@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/ganeshdipdumbare/kritrim"
+	"github.com/ganeshdipdumbare/kritrim/internal/boxutil"
 )
 
 // Config configures microsandbox VMs.
@@ -106,8 +107,9 @@ func (m *machine) msb(ctx context.Context, stdin []byte, args ...string) (string
 	if stdin != nil {
 		cmd.Stdin = bytes.NewReader(stdin)
 	}
-	var out, errb strings.Builder
-	cmd.Stdout, cmd.Stderr = &out, &errb
+	// The VM is untrusted: its output must not size the host's memory.
+	out, errb := boxutil.NewCapped(), boxutil.NewCapped()
+	cmd.Stdout, cmd.Stderr = out, errb
 	err := cmd.Run()
 	code := 0
 	var ee *exec.ExitError
@@ -115,6 +117,20 @@ func (m *machine) msb(ctx context.Context, stdin []byte, args ...string) (string
 		code, err = ee.ExitCode(), nil
 	}
 	return out.String(), errb.String(), code, err
+}
+
+// defaultExecTimeout bounds a command that has no timeout of its own, so a
+// hung command in the VM cannot block its caller forever.
+const defaultExecTimeout = 10 * time.Minute
+
+// usable reports an error once the machine is closed.
+func (m *machine) usable() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed {
+		return errors.New("microsandbox: machine is closed")
+	}
+	return nil
 }
 
 // execArgs builds `msb exec` for one command.
@@ -137,6 +153,14 @@ func (m *machine) Exec(ctx context.Context, r kritrim.ExecRequest) (kritrim.Exec
 	if len(r.Command) == 0 {
 		return kritrim.ExecResult{}, errors.New("microsandbox: empty command")
 	}
+	if err := m.usable(); err != nil {
+		return kritrim.ExecResult{}, err
+	}
+	if r.Timeout <= 0 {
+		r.Timeout = defaultExecTimeout
+	}
+	ctx, cancel := context.WithTimeout(ctx, r.Timeout)
+	defer cancel()
 	flags := []string{"--no-tty"}
 	if r.Stdin == nil {
 		flags = []string{"--no-stdin"}
@@ -148,6 +172,9 @@ func (m *machine) Exec(ctx context.Context, r kritrim.ExecRequest) (kritrim.Exec
 func (m *machine) Start(ctx context.Context, r kritrim.StartRequest) (kritrim.Process, error) {
 	if len(r.Command) == 0 {
 		return nil, errors.New("microsandbox: empty command")
+	}
+	if err := m.usable(); err != nil {
+		return nil, err
 	}
 	// Not CommandContext: the process outlives the start context.
 	cmd := exec.Command(m.bin, m.execArgs([]string{"--stream"}, r.Dir, r.Env, 0, r.Command)...)
@@ -167,6 +194,9 @@ func (m *machine) Start(ctx context.Context, r kritrim.StartRequest) (kritrim.Pr
 }
 
 func (m *machine) Read(ctx context.Context, path string) ([]byte, error) {
+	if err := m.usable(); err != nil {
+		return nil, err
+	}
 	dir, err := os.MkdirTemp("", "kritrim-msb-")
 	if err != nil {
 		return nil, err
@@ -180,6 +210,9 @@ func (m *machine) Read(ctx context.Context, path string) ([]byte, error) {
 }
 
 func (m *machine) Write(ctx context.Context, path string, data []byte, mode fs.FileMode) error {
+	if err := m.usable(); err != nil {
+		return err
+	}
 	if mode == 0 {
 		mode = 0o644
 	}

@@ -1,5 +1,7 @@
 package kritrim
 
+import "sync"
+
 // Option sets a per-run value. There is one option per concept; nothing
 // here duplicates a Config field.
 type Option func(*runOptions)
@@ -17,6 +19,9 @@ type runOptions struct {
 	// pending holds the interrupts of the paused step, by call ID. A decision
 	// applies only to the call it was given for.
 	pending map[string]Interrupt
+	// decMu guards decisions: calls in one step run in parallel and each may
+	// consume its decision.
+	decMu   *sync.Mutex
 	onEvent func(Event)
 	runID   string
 	idemKey string

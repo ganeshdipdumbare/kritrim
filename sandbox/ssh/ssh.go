@@ -67,10 +67,21 @@ func New(cfg Config) (kritrim.Sandbox, error) {
 // and SecurityKeyProvider dlopen a library; Match exec and Include can run
 // commands or read further config.
 var dangerous = []string{"proxycommand", "localcommand", "permitlocalcommand", "knownhostscommand", "remotecommand",
-	"pkcs11provider", "securitykeyprovider", "match", "include"}
+	"pkcs11provider", "securitykeyprovider", "match", "include",
+	// These open tunnels, or hand the remote host the local agent or the
+	// host-key checks: none is needed to run a command in a sandbox.
+	"forwardagent", "localforward", "remoteforward", "dynamicforward", "tunnel", "proxyjump",
+	"userknownhostsfile", "globalknownhostsfile", "checkhostip"}
 
 func checkOption(opt string) error {
 	low := strings.ToLower(strings.TrimSpace(opt))
+	// Host-key checking may be made stricter, never weaker.
+	if strings.HasPrefix(low, "stricthostkeychecking") {
+		v := strings.TrimLeft(strings.TrimPrefix(low, "stricthostkeychecking"), " =\t")
+		if v == "no" || v == "off" || v == "false" {
+			return fmt.Errorf("ssh: option %q turns off host-key verification", opt)
+		}
+	}
 	for _, d := range dangerous {
 		if strings.HasPrefix(low, d) || strings.Contains(low, d+"=") {
 			return fmt.Errorf("ssh: option %q can run commands on the local host", opt)
@@ -85,12 +96,17 @@ func (s *sandbox) Open(ctx context.Context, opts kritrim.OpenConfig) (kritrim.Ma
 	if _, err := exec.LookPath("ssh"); err != nil {
 		return nil, errors.New("ssh: client not found")
 	}
+	// An SSH host has no image to boot and no network setting kritrim can
+	// apply. Refuse them rather than ignore them silently.
+	if opts.Image != "" || opts.Network {
+		return nil, errors.New("ssh: a remote host cannot take an image or network setting")
+	}
 	// Verify the connection early so failures surface at New.
 	_, err := s.run(ctx, "true", nil, 15*time.Second)
 	if err != nil {
 		return nil, fmt.Errorf("ssh: connect: %w", err)
 	}
-	return &machine{cfg: s.cfg}, nil
+	return &machine{cfg: s.cfg, env: opts.Env}, nil
 }
 
 func (s *sandbox) args(remote string) []string {
@@ -112,7 +128,17 @@ func (s *sandbox) args(remote string) []string {
 	return append(args, s.cfg.Host, remote)
 }
 
+// run returns the command's output as raw bytes. A reply past the output
+// limit is an error, not a silently cut result.
 func (s *sandbox) run(ctx context.Context, remote string, stdin []byte, timeout time.Duration) (string, error) {
+	out, err := s.runCapped(ctx, remote, stdin, timeout)
+	if err != nil {
+		return "", err
+	}
+	return string(out), nil
+}
+
+func (s *sandbox) runCapped(ctx context.Context, remote string, stdin []byte, timeout time.Duration) ([]byte, error) {
 	cctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	cmd := exec.CommandContext(cctx, "ssh", s.args(remote)...)
@@ -121,14 +147,19 @@ func (s *sandbox) run(ctx context.Context, remote string, stdin []byte, timeout 
 	}
 	out, errb := boxutil.NewCapped(), boxutil.NewCapped()
 	cmd.Stdout, cmd.Stderr = out, errb
-	err := cmd.Run()
-	if err != nil {
-		return "", fmt.Errorf("%v: %s", err, strings.TrimSpace(errb.String()))
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("%v: %s", err, strings.TrimSpace(errb.String()))
 	}
-	return out.String(), nil
+	if out.Truncated() {
+		return nil, fmt.Errorf("ssh: output larger than %d bytes", boxutil.MaxOutput)
+	}
+	return out.Bytes(), nil
 }
 
-type machine struct{ cfg Config }
+type machine struct {
+	cfg Config
+	env []string // OpenConfig.Env, applied to every command
+}
 
 func (m *machine) Exec(ctx context.Context, req kritrim.ExecRequest) (kritrim.ExecResult, error) {
 	timeout := req.Timeout
@@ -165,6 +196,12 @@ func (m *machine) ExecStream(ctx context.Context, req kritrim.ExecRequest, emit 
 	if err != nil {
 		return kritrim.ExecResult{}, err
 	}
+	timeout := req.Timeout
+	if timeout <= 0 {
+		timeout = m.cfg.Timeout
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 	cmd := exec.CommandContext(ctx, "ssh", (&sandbox{cfg: m.cfg}).args(remote)...)
 	if req.Stdin != nil {
 		cmd.Stdin = bytes.NewReader(req.Stdin)
@@ -233,8 +270,7 @@ func (m *machine) Start(ctx context.Context, req kritrim.StartRequest) (kritrim.
 }
 
 func (m *machine) Read(ctx context.Context, p string) ([]byte, error) {
-	out, err := (&sandbox{cfg: m.cfg}).run(ctx, "cat "+quote(p), nil, m.cfg.Timeout)
-	return []byte(out), err
+	return (&sandbox{cfg: m.cfg}).runCapped(ctx, "cat "+quote(p), nil, m.cfg.Timeout)
 }
 
 func (m *machine) Write(ctx context.Context, p string, data []byte, mode fs.FileMode) error {
@@ -242,8 +278,8 @@ func (m *machine) Write(ctx context.Context, p string, data []byte, mode fs.File
 	defer cancel()
 	cmd := exec.CommandContext(cctx, "ssh", (&sandbox{cfg: m.cfg}).args("cat > "+quote(p))...)
 	cmd.Stdin = strings.NewReader(string(data))
-	var errb strings.Builder
-	cmd.Stderr = &errb
+	errb := boxutil.NewCapped()
+	cmd.Stderr = errb
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("ssh: write %s: %v: %s", p, err, errb.String())
 	}
@@ -266,6 +302,7 @@ var envName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 func (m *machine) command(argv []string, dir string, env []string) (string, error) {
 	var b strings.Builder
 	b.WriteString("cd " + quote(firstNonEmpty(dir, m.cfg.WorkingDir)))
+	env = append(append([]string(nil), m.env...), env...)
 	for _, e := range env {
 		// Each entry is NAME=value. The value is data, so it is quoted;
 		// an entry that is not NAME=value is refused rather than guessed at.

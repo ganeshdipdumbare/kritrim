@@ -439,6 +439,9 @@ func (p *dockerProc) Wait() error {
 }
 
 func (p *dockerProc) Kill() error {
+	// A killed process may never be waited on, and the env file it was given
+	// holds secrets. The CLI has read it by now or is dead, so remove it here.
+	defer p.cleanup()
 	if p.cmd.Process != nil {
 		return p.cmd.Process.Kill()
 	}

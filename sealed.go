@@ -386,6 +386,12 @@ func (b *boxHost) substitute(r *httpRequest) error {
 		}
 		r.Body = bytes.ReplaceAll(r.Body, []byte(ph), []byte(bind.value))
 	}
+	// A secret's value is spliced into the URL. A value holding URL syntax
+	// ("@", "/", "?") could move the request to another host after the host
+	// check above, so the host must still be the one that was checked.
+	if nu, err := url.Parse(r.URL); err != nil || !strings.EqualFold(nu.Hostname(), host) {
+		return fmt.Errorf("kritrim: a secret may not change the request host")
+	}
 	for ph := range b.secrets {
 		if strings.Contains(r.URL, ph) || strings.Contains(string(r.Body), ph) {
 			return fmt.Errorf("kritrim: secret %q may not be sent to %q", ph, host)

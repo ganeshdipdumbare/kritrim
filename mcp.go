@@ -109,6 +109,13 @@ func (p *mcpPeer) call(ctx context.Context, method string, params, out any) erro
 	p.pmu.Lock()
 	p.pending[id] = ch
 	p.pmu.Unlock()
+	// A reply that arrives after the caller gave up has nobody to deliver
+	// to. Drop the entry on every return path, so timeouts cannot leak it.
+	defer func() {
+		p.pmu.Lock()
+		delete(p.pending, id)
+		p.pmu.Unlock()
+	}()
 	b, _ := json.Marshal(params)
 	p.mu.Lock()
 	err := p.enc.Encode(mcpMsg{JSONRPC: "2.0", ID: id, Method: method, Params: b})

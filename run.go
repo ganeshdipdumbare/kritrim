@@ -146,6 +146,7 @@ func (a *Agent) run(ctx context.Context, prompt string, emit func(Event), opts .
 	a.audit(ctx, o, "run", "", "start")
 	// Copy the decisions: the run consumes them, and the caller's map is theirs.
 	o.decisions = copyDecisions(o.decisions)
+	o.decMu = &sync.Mutex{}
 	o.pending = map[string]Interrupt{}
 	for _, in := range sess.Pending {
 		o.pending[in.CallID] = in
@@ -490,6 +491,21 @@ func (a *Agent) executeCall(ctx context.Context, o runOptions, call ToolCall, em
 	return a.execute(ctx, o, call, emit, false)
 }
 
+// takeDecision returns the decision for a call, if it is for this call, and
+// consumes it: one approval authorizes one call.
+func (a *Agent) takeDecision(o runOptions, call ToolCall) *Decision {
+	if o.decMu != nil {
+		o.decMu.Lock()
+		defer o.decMu.Unlock()
+	}
+	d, ok := o.decisions[call.ID]
+	if !ok || !a.decisionFits(o, call) {
+		return nil
+	}
+	delete(o.decisions, call.ID)
+	return &d
+}
+
 // decisionFits reports whether the call is the one a decision was given
 // for: the same tool with the same arguments as the pending interrupt. A
 // model-chosen call ID that repeats an old one gets no approval from it.
@@ -514,10 +530,8 @@ func (a *Agent) execute(ctx context.Context, o runOptions, call ToolCall, emit f
 		return ToolResult{CallID: call.ID, Name: call.Name, Content: "unknown tool " + call.Name, IsError: true}, nil
 	}
 	var dec *Decision
-	if d, ok := o.decisions[call.ID]; ok && !swapped && a.decisionFits(o, call) {
-		dec = &d
-		// One approval authorizes one call.
-		delete(o.decisions, call.ID)
+	if !swapped {
+		dec = a.takeDecision(o, call)
 	}
 	if dec == nil && tool.risky() {
 		ap := &Approval{Tool: tool.Name, CallID: call.ID, Args: call.Args,

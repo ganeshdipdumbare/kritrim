@@ -106,6 +106,23 @@ from v1.0.0 on; see [docs/API.md](docs/API.md) for what the promise covers and
 - **vmagent** no longer changes the socket's mode by path, so a symlink planted
   there cannot redirect it.
 
+- **SSH sandbox**: `Read` returns raw bytes and fails past the output limit;
+  `Write` caps its stderr; `ExecStream` honors the request timeout; `OpenConfig.Env`
+  reaches commands; an image or network setting is refused rather than ignored.
+  The option denylist adds tunnel, agent-forwarding and host-key directives, and
+  refuses `StrictHostKeyChecking` set to a weaker value.
+- **microsandbox**: output is capped; a command without a timeout gets a
+  10-minute default; use after `Close` returns an error.
+- **Parallel tool calls** consume their decisions under a lock. Two calls with
+  one call ID could otherwise write the same map at once.
+- **MCP** drops its pending entry when a call times out or is canceled.
+- **Semantic memory** does not overwrite a newer vector with one embedded from
+  text that has since changed.
+- **Secrets** cannot change the request host: a value with URL syntax is refused.
+- **Docker**: the env file is removed when a started process is killed.
+- **Off unix**, session and audit locks serialize goroutines in one process.
+- **Docs** palette keydown handler tolerates a page without the palette.
+
 ### Added
 
 - `ExecRequest.Allow`: when set, the Local machine refuses commands outside it.
@@ -122,7 +139,15 @@ from v1.0.0 on; see [docs/API.md](docs/API.md) for what the promise covers and
 - A direct `Machine` caller that passes no `Allow` is unrestricted on the Local
   machine. The agent always sets `Allow`. Other machines ignore it.
 - vmagent authenticates the peer by CID only. A boot-time secret is not yet
-  provisioned by the host.
+  provisioned by the host, and a stale-socket removal has a small residual
+  window.
+- The audit log and the signed session store cannot detect a full rollback to
+  an older consistent copy. That needs an external anchor, such as a signed
+  checkpoint the operator keeps elsewhere.
+- Thread IDs are supplied by the host application. The library does not bind a
+  thread to a user; an app that takes thread IDs from end users must check them.
+- The webhook signature covers the path only when `BindPath` is set.
+- SSH `Close` does not stop remote processes; the local `ssh` client is killed.
 
 ## v1.0.0 — 2026-11-14
 
