@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"sync"
+	"time"
 
 	"github.com/ganeshdipdumbare/kritrim/internal/boxutil"
 )
@@ -47,6 +48,9 @@ func (m *localMachine) ExecStream(ctx context.Context, r ExecRequest, emit func(
 	if len(r.Command) == 0 {
 		return ExecResult{}, fmt.Errorf("kritrim: empty command")
 	}
+	// The same timeout Exec honors: a streamed command is not exempt from it.
+	ctx, cancel := withTimeoutOr(ctx, r.Timeout, 60*time.Second)
+	defer cancel()
 	if r.Allow != nil {
 		if err := checkCommand(execRequest{Command: r.Command, Allow: r.Allow}); err != nil {
 			return ExecResult{}, err
@@ -126,7 +130,24 @@ func (m *localMachine) Start(ctx context.Context, r StartRequest) (Process, erro
 }
 
 func (m *localMachine) Read(ctx context.Context, path string) ([]byte, error) {
-	return os.ReadFile(path)
+	// Like every other machine's Read, a file past the output limit, or a
+	// device, is an error, not a read into host memory.
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !fi.Mode().IsRegular() {
+		return nil, fmt.Errorf("kritrim: %s is not a regular file", path)
+	}
+	if fi.Size() > boxutil.MaxOutput {
+		return nil, fmt.Errorf("kritrim: %s is larger than %d bytes", path, boxutil.MaxOutput)
+	}
+	return io.ReadAll(io.LimitReader(f, boxutil.MaxOutput+1))
 }
 
 func (m *localMachine) Write(ctx context.Context, path string, data []byte, mode fs.FileMode) error {

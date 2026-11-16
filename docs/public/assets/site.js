@@ -204,7 +204,7 @@
       }
     }
     if (t.anchor) {
-      var el = document.getElementById(t.anchor);
+      var el = t.anchor; // pageFor already found the element
       if (el) setTimeout(function () { el.scrollIntoView({ block: "start" }); }, 0);
     } else {
       window.scrollTo(0, 0);

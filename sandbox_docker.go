@@ -159,7 +159,7 @@ func (m *dockerMachine) Exec(ctx context.Context, r ExecRequest) (ExecResult, er
 	if err := checkEnv(r.Env); err != nil {
 		return ExecResult{}, err
 	}
-	ctx, cancel := withTimeout(ctx, r.Timeout)
+	ctx, cancel := withTimeoutOr(ctx, r.Timeout, defaultDockerExecTimeout)
 	defer cancel()
 	envPath, cleanup, err := envFile(r.Env)
 	if err != nil {
@@ -177,7 +177,7 @@ func (m *dockerMachine) ExecStream(ctx context.Context, r ExecRequest, emit func
 	if err := checkEnv(r.Env); err != nil {
 		return ExecResult{}, err
 	}
-	ctx, cancel := withTimeout(ctx, r.Timeout)
+	ctx, cancel := withTimeoutOr(ctx, r.Timeout, defaultDockerExecTimeout)
 	defer cancel()
 	envPath, cleanup, err := envFile(r.Env)
 	if err != nil {
@@ -300,6 +300,18 @@ func checkRef(what, v string) error {
 	return nil
 }
 
+// defaultDockerExecTimeout bounds a docker exec that has no timeout of its own.
+const defaultDockerExecTimeout = 10 * time.Minute
+
+// withTimeoutOr bounds a request by its timeout, or by the default when it has
+// none.
+func withTimeoutOr(ctx context.Context, d, def time.Duration) (context.Context, context.CancelFunc) {
+	if d <= 0 {
+		d = def
+	}
+	return context.WithTimeout(ctx, d)
+}
+
 // withTimeout bounds a request by its own timeout, if it has one.
 func withTimeout(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc) {
 	if d <= 0 {
@@ -344,7 +356,7 @@ func (m *dockerMachine) Start(ctx context.Context, r StartRequest) (Process, err
 	if err != nil {
 		return nil, err
 	}
-	cmd.Stderr = os.Stderr
+	cmd.Stderr = boxutil.SafeStderr()
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
@@ -483,7 +495,9 @@ func dockerRunWith(ctx context.Context, args []string, stdin []byte, env []strin
 func tarOne(name string, data []byte, mode fs.FileMode) ([]byte, error) {
 	var b bytes.Buffer
 	tw := tar.NewWriter(&b)
-	h := &tar.Header{Name: name, Mode: int64(mode), Size: int64(len(data)), Typeflag: tar.TypeReg}
+	// Only the permission bits belong in a tar header. Go type bits in the
+	// mode would make the archive's entry something other than a file.
+	h := &tar.Header{Name: name, Mode: int64(mode.Perm()), Size: int64(len(data)), Typeflag: tar.TypeReg}
 	if err := tw.WriteHeader(h); err != nil {
 		return nil, err
 	}

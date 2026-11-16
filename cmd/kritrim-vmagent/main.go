@@ -65,6 +65,7 @@ func serve(listen string, env []string) error {
 		if err != nil {
 			return err
 		}
+		failures := 0
 		for {
 			c, err := l.Accept()
 			if err != nil {
@@ -72,10 +73,16 @@ func serve(listen string, env []string) error {
 					return err
 				}
 				// A transient accept failure must not take down the sessions
-				// that are running.
+				// that are running. A listener that keeps failing is broken,
+				// and is reported rather than retried forever.
+				failures++
+				if failures >= 100 {
+					return fmt.Errorf("accept keeps failing: %w", err)
+				}
 				time.Sleep(50 * time.Millisecond)
 				continue
 			}
+			failures = 0
 			go vmagent.Serve(c, env)
 		}
 	}

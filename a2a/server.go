@@ -672,7 +672,10 @@ func threadID(who, ctxID string) string {
 	if who == "" {
 		return ctxID
 	}
-	return who + ":" + ctxID
+	// The principal is escaped, so its own colons cannot blur where it ends:
+	// principal "a:b" with context "c" must not share a thread with principal
+	// "a" and context "b:c".
+	return strings.NewReplacer("%", "%25", ":", "%3A").Replace(who) + ":" + ctxID
 }
 
 // agent returns the cached agent for this principal's context. The agent

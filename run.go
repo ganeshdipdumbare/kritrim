@@ -557,7 +557,9 @@ func (a *Agent) execute(ctx context.Context, o runOptions, call ToolCall, emit f
 		if dec.Respond != "" {
 			return ToolResult{CallID: call.ID, Name: tool.Name, Content: a.redactor.redact(dec.Respond)}, nil
 		}
-		if !dec.Approve && dec.Args == nil {
+		// Only an approval runs the call. A rejection that also carries
+		// replacement arguments is still a rejection.
+		if !dec.Approve {
 			why := dec.Reason
 			if why == "" {
 				why = "rejected"
@@ -599,7 +601,9 @@ func (a *Agent) execute(ctx context.Context, o runOptions, call ToolCall, emit f
 	if err := tool.checkArgs(call.Args); err != nil {
 		return ToolResult{CallID: call.ID, Name: tool.Name, Content: "error: " + err.Error(), IsError: true}, nil
 	}
-	tctx, cancel := context.WithTimeout(context.WithValue(ctx, keyCall, call.ID), 2*time.Minute)
+	// The tool's own timeout governs; this is only a backstop, so it must be
+	// longer than any timeout a tool can be configured with.
+	tctx, cancel := context.WithTimeout(context.WithValue(ctx, keyCall, call.ID), 15*time.Minute)
 	defer cancel()
 	content, err := runTool(tctx, tool, call.Args)
 	res := ToolResult{CallID: call.ID, Name: tool.Name, Content: content}

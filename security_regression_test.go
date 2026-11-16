@@ -290,3 +290,26 @@ func TestAuditAcceptsOversizedDetailAndStaysVerifiable(t *testing.T) {
 		t.Fatalf("log does not verify: %v", err)
 	}
 }
+
+// A rejection that also carries replacement arguments is still a rejection:
+// the risky tool must not run.
+func TestRejectWithArgsDoesNotRunRiskyTool(t *testing.T) {
+	var ran atomic.Int32
+	refund := Risky(NewTool("refund", "refund", func(ctx context.Context, in struct {
+		Amount int `json:"amount"`
+	}) (string, error) {
+		ran.Add(1)
+		return "refunded", nil
+	}))
+	m := &spyModel{turns: []Turn{TurnTool("refund", map[string]any{"amount": 5})}}
+	a := newAgent(t, Config{Model: m, Tools: []Tool{refund},
+		Approve: func(ctx context.Context, req Approval) (Decision, error) {
+			d := Reject("no")
+			d.Args = map[string]any{"amount": 1000000}
+			return d, nil
+		}})
+	_, _ = a.Run(context.Background(), "refund")
+	if ran.Load() != 0 {
+		t.Fatal("a rejected call ran with the replacement arguments")
+	}
+}

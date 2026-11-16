@@ -97,7 +97,7 @@ func capField(s string) string {
 func (a *fileAudit) Write(ctx context.Context, e Entry) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	e.Name, e.Detail = capField(e.Name), capField(e.Detail)
+	e.Kind, e.Name, e.Detail = capField(e.Kind), capField(e.Name), capField(e.Detail)
 	e.Thread, e.User = capField(e.Thread), capField(e.User)
 	if a.key != nil && len(a.key) < 32 {
 		return errAuditKey

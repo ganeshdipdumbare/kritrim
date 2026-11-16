@@ -242,12 +242,17 @@ func (s *sqlDedupe) sweep(ctx context.Context, now time.Time) {
 		s.mu.Unlock()
 		return
 	}
-	s.swept = now
 	s.mu.Unlock()
 	// Expired rows go whether or not they finished: a claim past its expiry is
 	// takeover-eligible anyway, and unfinished ones would otherwise pile up
-	// forever.
-	_, _ = s.db.ExecContext(ctx, s.q(fmt.Sprintf("DELETE FROM %s WHERE expires < ?", s.cfg.Table)), now.UnixMilli())
+	// forever. The sweep time is recorded only once the delete has run, so a
+	// failed or canceled sweep is tried again on the next claim.
+	if _, err := s.db.ExecContext(ctx, s.q(fmt.Sprintf("DELETE FROM %s WHERE expires < ?", s.cfg.Table)), now.UnixMilli()); err != nil {
+		return
+	}
+	s.mu.Lock()
+	s.swept = now
+	s.mu.Unlock()
 }
 
 func (s *sqlDedupe) Complete(ctx context.Context, id string, result []byte) error {

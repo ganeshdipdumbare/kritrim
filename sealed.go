@@ -601,7 +601,7 @@ func argsDigest(args map[string]any) string {
 
 // grant records an approved call so the bridged tool may run once.
 func (b *boxHost) grant(r *activeRun, callID, tool string, args map[string]any, dec Decision) {
-	if callID == "" || dec.Pause || dec.Respond != "" || (!dec.Approve && dec.Args == nil) {
+	if callID == "" || dec.Pause || dec.Respond != "" || !dec.Approve {
 		return
 	}
 	if dec.Args != nil {

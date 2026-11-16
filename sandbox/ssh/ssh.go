@@ -71,7 +71,8 @@ var dangerous = []string{"proxycommand", "localcommand", "permitlocalcommand", "
 	// These open tunnels, or hand the remote host the local agent or the
 	// host-key checks: none is needed to run a command in a sandbox.
 	"forwardagent", "localforward", "remoteforward", "dynamicforward", "tunnel", "proxyjump",
-	"userknownhostsfile", "globalknownhostsfile", "checkhostip"}
+	"userknownhostsfile", "globalknownhostsfile", "checkhostip",
+	"smartcarddevice", "x11forwarding", "clearallforwardings"}
 
 func checkOption(opt string) error {
 	low := strings.ToLower(strings.TrimSpace(opt))
@@ -276,7 +277,10 @@ func (m *machine) Read(ctx context.Context, p string) ([]byte, error) {
 func (m *machine) Write(ctx context.Context, p string, data []byte, mode fs.FileMode) error {
 	cctx, cancel := context.WithTimeout(ctx, m.cfg.Timeout)
 	defer cancel()
-	cmd := exec.CommandContext(cctx, "ssh", (&sandbox{cfg: m.cfg}).args("cat > "+quote(p))...)
+	// The umask is set on the remote shell before the file exists, so the
+	// file is never created with a wider mode than the one asked for.
+	umask := 0o777 &^ int(mode.Perm())
+	cmd := exec.CommandContext(cctx, "ssh", (&sandbox{cfg: m.cfg}).args(fmt.Sprintf("umask %03o && cat > %s", umask, quote(p)))...)
 	cmd.Stdin = strings.NewReader(string(data))
 	errb := boxutil.NewCapped()
 	cmd.Stderr = errb

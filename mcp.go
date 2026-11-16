@@ -10,12 +10,13 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"os"
 	"os/exec"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/ganeshdipdumbare/kritrim/internal/boxutil"
 )
 
 // MCPConfig connects one MCP server. Set Command for stdio, or URL for
@@ -163,7 +164,7 @@ func connectMCP(ctx context.Context, cfg MCPConfig, a *Agent) (*mcpClient, error
 	if cfg.Command != "" {
 		cmd := exec.Command(cfg.Command, cfg.Args...)
 		cmd.Env = childEnv(cfg.Env)
-		cmd.Stderr = os.Stderr
+		cmd.Stderr = boxutil.SafeStderr()
 		in, err := cmd.StdinPipe()
 		if err != nil {
 			return nil, err

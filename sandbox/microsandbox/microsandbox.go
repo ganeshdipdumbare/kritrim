@@ -186,7 +186,7 @@ func (m *machine) Start(ctx context.Context, r kritrim.StartRequest) (kritrim.Pr
 	if err != nil {
 		return nil, err
 	}
-	cmd.Stderr = os.Stderr
+	cmd.Stderr = boxutil.SafeStderr()
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}

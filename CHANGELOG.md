@@ -123,6 +123,26 @@ from v1.0.0 on; see [docs/API.md](docs/API.md) for what the promise covers and
 - **Off unix**, session and audit locks serialize goroutines in one process.
 - **Docs** palette keydown handler tolerates a page without the palette.
 
+- **A rejection never runs the tool**, even when it also carries replacement
+  arguments (both in the agent and for sealed bridged calls).
+- **Tool calls get their own timeout.** The two-minute backstop is now 15 minutes,
+  so a tool's configured timeout is what applies.
+- **Webhook**: a duplicate waits no longer than `RunTimeout` (then 503 with
+  `Retry-After`), and the claim is released even when a run hits its timeout.
+- **A2A thread IDs** escape the principal, so principals with colons in their IDs
+  cannot share a thread.
+- **Local sandbox**: `ExecStream` honors the timeout, and `Read` refuses devices
+  and files past the output limit. **Docker** exec has a 10-minute default timeout.
+  Tar entries carry permission bits only.
+- **SSH** creates files with the requested mode (umask set before the write),
+  and the option denylist also covers smartcard and X11 forwarding.
+- **Host stderr** from MCP servers, docker, and microsandbox is sanitized of
+  control characters.
+- **Audit** caps the entry kind too.
+- **SQL dedupe** records a sweep only after it has run.
+- **Evals cache** writes atomically. **Docs** deep links scroll to their anchor.
+- **vmagent** gives up after 100 consecutive accept failures.
+
 ### Added
 
 - `ExecRequest.Allow`: when set, the Local machine refuses commands outside it.
@@ -148,6 +168,9 @@ from v1.0.0 on; see [docs/API.md](docs/API.md) for what the promise covers and
   thread to a user; an app that takes thread IDs from end users must check them.
 - The webhook signature covers the path only when `BindPath` is set.
 - SSH `Close` does not stop remote processes; the local `ssh` client is killed.
+- Brokered HTTP bodies over 8 MiB are cut at the limit without a marker.
+- An MCP stdio server can send messages of any size.
+- Sealed box egress includes every secret's destination host by design.
 
 ## v1.0.0 — 2026-11-14
 

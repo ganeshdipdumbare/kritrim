@@ -217,7 +217,16 @@ func (h *webhook) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		// Running elsewhere: wait for it, then look again. A leader
 		// that fails releases the delivery and this caller runs it.
-		if !h.wait(r.Context(), id) {
+		// Waiting is bounded: a delivery that never finishes must not hold
+		// its duplicates forever.
+		wctx, cancel := context.WithTimeout(r.Context(), h.cfg.RunTimeout)
+		ok := h.wait(wctx, id)
+		cancel()
+		if !ok {
+			if r.Context().Err() == nil {
+				w.Header().Set("Retry-After", "5")
+				http.Error(w, "busy", http.StatusServiceUnavailable)
+			}
 			return
 		}
 	}
@@ -236,7 +245,9 @@ func (h *webhook) run(w http.ResponseWriter, r *http.Request, id string, body []
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), h.cfg.RunTimeout)
 	defer cancel()
 	// Release and Complete act only on this leader's claim (see withFence).
-	fctx := withFence(ctx, expires)
+	// They run on a context that is not canceled: a run that hit RunTimeout
+	// must still release its claim, or the delivery stays held.
+	fctx := withFence(context.WithoutCancel(ctx), expires)
 	finished := false
 	defer func() {
 		if !finished {
