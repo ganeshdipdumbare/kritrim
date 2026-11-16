@@ -4,7 +4,7 @@ All notable changes. kritrim follows [semantic versioning](https://semver.org)
 from v1.0.0 on; see [docs/API.md](docs/API.md) for what the promise covers and
 [docs/MIGRATING.md](docs/MIGRATING.md) for moving from v0.9.
 
-## Unreleased
+## v1.0.1 — 2026-11-16
 
 ### Fixed
 
