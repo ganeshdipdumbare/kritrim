@@ -1,6 +1,7 @@
 package kritrim
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -51,11 +52,27 @@ func (p *peer) handle(method string, fn handlerFunc) {
 	p.hmu.Unlock()
 }
 
+// maxFrame bounds one frame. Frames are newline-delimited (json.Encoder never
+// writes a raw newline inside a value), so a longer line ends the peer. It
+// matches the vmagent frame limit and is sized so that a full 8 MiB tool or
+// HTTP result, which JSON escaping can grow several times, still fits.
+const maxFrame = 64 << 20
+
+// maxInFlight bounds guest-initiated handlers running at once. When the cap
+// is reached, reading pauses until a handler finishes.
+const maxInFlight = 64
+
 func (p *peer) readLoop(r io.Reader) {
-	dec := json.NewDecoder(r)
+	sc := bufio.NewScanner(r)
+	sc.Buffer(make([]byte, 0, 64<<10), maxFrame)
+	sem := make(chan struct{}, maxInFlight)
 	for {
+		if !sc.Scan() {
+			p.shutdown()
+			return
+		}
 		var m wire
-		if err := dec.Decode(&m); err != nil {
+		if err := json.Unmarshal(sc.Bytes(), &m); err != nil {
 			p.shutdown()
 			return
 		}
@@ -78,7 +95,9 @@ func (p *peer) readLoop(r io.Reader) {
 			}
 			continue
 		}
+		sem <- struct{}{}
 		go func(m wire, fn handlerFunc) {
+			defer func() { <-sem }()
 			res, err := fn(context.Background(), m.Params)
 			if m.ID == 0 {
 				return

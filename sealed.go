@@ -661,18 +661,7 @@ func (b *boxHost) run(ctx context.Context, prompt string, emit func(Event), o ru
 	b.cmu.Lock()
 	b.cur = cur
 	b.cmu.Unlock()
-	defer func() {
-		// End the run: refuse new leases, cancel in-flight calls and wait
-		// for them, so nothing the box queued runs afterwards.
-		b.cmu.Lock()
-		b.cur = nil
-		b.cmu.Unlock()
-		cur.cancel()
-		cur.leases.Wait()
-		b.emu.Lock()
-		b.emit = nil
-		b.emu.Unlock()
-	}()
+	defer b.endRun(cur)
 
 	var msgs []Message
 	var pending []Interrupt
@@ -763,4 +752,29 @@ func contains(list []string, v string) bool {
 		}
 	}
 	return false
+}
+
+// endRun ends a run: it refuses new leases, cancels in-flight calls and waits
+// for them, so nothing the box queued runs afterwards. Secret bindings are
+// run-scoped, so a placeholder minted in this run must not be substituted
+// into a later run, whichever identity that run carries.
+func (b *boxHost) endRun(cur *activeRun) {
+	b.cmu.Lock()
+	b.cur = nil
+	b.cmu.Unlock()
+	cur.cancel()
+	cur.leases.Wait()
+	b.clearSecretBindings()
+	b.emu.Lock()
+	b.emit = nil
+	b.emu.Unlock()
+}
+
+// clearSecretBindings drops every placeholder binding. Called at run end so
+// that a later run cannot use a credential granted to an earlier one.
+func (b *boxHost) clearSecretBindings() {
+	b.smu.Lock()
+	defer b.smu.Unlock()
+	b.secrets = map[string]secretBinding{}
+	b.secretPH = map[string]string{}
 }
