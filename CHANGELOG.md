@@ -4,6 +4,18 @@ All notable changes. kritrim follows [semantic versioning](https://semver.org)
 from v1.0.0 on; see [docs/API.md](docs/API.md) for what the promise covers and
 [docs/MIGRATING.md](docs/MIGRATING.md) for moving from v0.9.
 
+## Unreleased
+
+### Fixed
+
+- **Sealed-box RPC frames are bounded.** The host and the guest read frames
+  with a 64 MiB cap and at most 64 guest handlers run at once. Before, a
+  guest could send an arbitrarily large frame and grow host memory without
+  limit.
+- **Secret placeholders are scoped to one run.** Bindings minted for a run are
+  cleared when it ends, so a later run on the same sealed box cannot have a
+  placeholder substituted with a credential granted to an earlier run.
+
 ## v1.0.1 — 2026-11-16
 
 ### Fixed
