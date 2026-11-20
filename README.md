@@ -366,6 +366,11 @@ kritrim.StateFrom(ctx).Set("seen", true)
   DNS rebinding cannot reach an internal address; every redirect is
   re-validated, and a request carrying a secret never follows one to another
   host.
+- **Scoped HTTP access.** `HTTPConfig.Endpoints` and `Sealed.Endpoints` can
+  narrow endpoint access by port, method and path. A matching host in
+  `AllowHosts` / `Egress` remains a broader grant. `Endpoint.Audit` temporarily
+  permits out-of-scope requests for that host and reports them through the
+  configured logger.
 - **No shell interpretation.** `Shell` takes `argv`; `argv[0]` must be allowed,
   on the host, in a sandbox and inside a sealed box.
 - **No inherited credentials.** Shell commands, MCP stdio servers and local
@@ -375,7 +380,9 @@ kritrim.StateFrom(ctx).Set("seen", true)
   root.
 - **Validated arguments.** Tool arguments must match the tool schema.
 - **Secrets stay out of prompts.** `secret://NAME` is resolved at use and
-  redacted from output, events and audit.
+  redacted from output, events and audit. `Config.SecretHosts` can bind a
+  secret to allowed destination hosts; without a binding, a secret can only
+  go to an exactly listed host, not one reached through a wildcard.
 - **Approvals.** Risky tools need `Config.Approve`; without it they are refused.
 - **Limits.** Steps (20), tool calls (100) and tokens (1,000,000) per run by
   default, per-tool timeout, panic recovery. `Limits.Tokens: -1` removes the
@@ -448,12 +455,21 @@ a, _ := kritrim.New(kritrim.Config{
 `Local` exists for development. `sandbox/ssh` runs commands and files on a
 remote host with host-key checking and an SSH option allowlist.
 Containers kritrim creates drop all capabilities, set `no-new-privileges`,
-have no network, and are capped at 2 GB memory, 2 CPUs and 512 processes;
-`DockerConfig` has `User`, `ReadOnly`, `Memory`, `CPUs`, `PidsLimit` and
-`CapAdd` to tune that. `DockerConfig{Container: "name"}` attaches to an
+disable core dumps, use a private IPC namespace, have no network by default,
+and are capped at 2 GB memory, 2 CPUs and 512 processes. `DockerConfig.Strict`
+also selects an unprivileged user and a read-only root filesystem.
+`DockerConfig` has `User`, `ReadOnly`, `Memory`, `CPUs`, `PidsLimit`, `CapAdd`
+and `Seccomp` to tune that. `DockerConfig{Container: "name"}` attaches to an
 existing container instead of creating one, and `StreamingMachine` streams
 exec output. Every adapter
 must pass `sandbox/sandboxtest.Run`.
+
+`Confined` is a Linux-only host sandbox for development and single-user
+workloads. It uses Landlock and seccomp, runs as the current user, and gives
+commands a private writable workspace. With `Network: false`, it needs Linux
+6.7 or newer; with network enabled, Linux 6.2 or newer. It fails closed when
+the kernel or architecture cannot enforce the requested restrictions. Use a
+container or VM when commands need a separate user identity.
 
 ### The agent in a sandbox (sealed)
 

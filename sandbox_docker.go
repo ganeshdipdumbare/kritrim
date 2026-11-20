@@ -47,12 +47,55 @@ type DockerConfig struct {
 	ReadOnly bool
 	// CapAdd re-adds Linux capabilities, e.g. "CHOWN". Default none.
 	CapAdd []string
+	// Seccomp is the path of a seccomp profile (JSON) to use instead of
+	// Docker's default one. "unconfined" is refused.
+	Seccomp string
+	// Strict applies the full hardening set: a non-root user (65534:65534,
+	// "nobody", unless User is set), a read-only root filesystem and no
+	// added capabilities. Recommended for every untrusted workload.
+	Strict bool
+}
+
+// strictUser is the user a Strict container runs as when User is empty.
+const strictUser = "65534:65534"
+
+// hardened returns cfg with Strict applied, or an error when the settings
+// contradict it.
+func (cfg DockerConfig) hardened() (DockerConfig, error) {
+	if strings.EqualFold(strings.TrimSpace(cfg.Seccomp), "unconfined") {
+		return cfg, errors.New("kritrim: Docker Seccomp \"unconfined\" is refused; give a profile path")
+	}
+	if cfg.Seccomp != "" {
+		if st, err := os.Stat(cfg.Seccomp); err != nil || !st.Mode().IsRegular() {
+			return cfg, fmt.Errorf("kritrim: Docker Seccomp profile %q is not a readable file", cfg.Seccomp)
+		}
+	}
+	if !cfg.Strict {
+		return cfg, nil
+	}
+	if len(cfg.CapAdd) > 0 {
+		return cfg, errors.New("kritrim: Docker Strict refuses CapAdd")
+	}
+	if cfg.User == "" {
+		cfg.User = strictUser
+	}
+	if u, _, _ := strings.Cut(cfg.User, ":"); u == "0" || u == "root" {
+		return cfg, errors.New("kritrim: Docker Strict refuses the root user")
+	}
+	cfg.ReadOnly = true
+	return cfg, nil
 }
 
 // dockerRunArgs builds the hardened `docker run` command line.
 func dockerRunArgs(cfg DockerConfig, name, image string, opts OpenConfig, envPath string) []string {
 	args := []string{"run", "-d", "--rm", "--name", name,
-		"--cap-drop", "ALL", "--security-opt", "no-new-privileges"}
+		"--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+		// No core dumps (a crash must not write process memory, which can
+		// hold secrets, to disk) and a private IPC namespace.
+		"--ulimit", "core=0", "--ipc", "private"}
+	if cfg.Seccomp != "" {
+		args = append(args, "--security-opt", "seccomp="+cfg.Seccomp)
+	}
 	for _, c := range cfg.CapAdd {
 		args = append(args, "--cap-add", c)
 	}
@@ -103,17 +146,21 @@ func (d *dockerSandbox) Open(ctx context.Context, opts OpenConfig) (Machine, err
 	if _, err := exec.LookPath("docker"); err != nil {
 		return nil, errors.New("kritrim: docker CLI not found")
 	}
-	if d.cfg.Container != "" {
-		if err := checkRef("container", d.cfg.Container); err != nil {
+	cfg, err := d.cfg.hardened()
+	if err != nil {
+		return nil, err
+	}
+	if cfg.Container != "" {
+		if err := checkRef("container", cfg.Container); err != nil {
 			return nil, err
 		}
-		out, stderr, code, err := dockerRun(ctx, []string{"inspect", "-f", "{{.State.Running}}", "--", d.cfg.Container}, nil)
+		out, stderr, code, err := dockerRun(ctx, []string{"inspect", "-f", "{{.State.Running}}", "--", cfg.Container}, nil)
 		if err != nil || code != 0 || strings.TrimSpace(out) != "true" {
-			return nil, fmt.Errorf("kritrim: container %q is not running: %s %w", d.cfg.Container, stderr, err)
+			return nil, fmt.Errorf("kritrim: container %q is not running: %s %w", cfg.Container, stderr, err)
 		}
-		return &dockerMachine{name: d.cfg.Container, external: true}, nil
+		return &dockerMachine{name: cfg.Container, external: true}, nil
 	}
-	image := d.cfg.Image
+	image := cfg.Image
 	if opts.Image != "" {
 		image = opts.Image
 	}
@@ -123,7 +170,7 @@ func (d *dockerSandbox) Open(ctx context.Context, opts OpenConfig) (Machine, err
 	if err := checkRef("image", image); err != nil {
 		return nil, err
 	}
-	for _, c := range d.cfg.CapAdd {
+	for _, c := range cfg.CapAdd {
 		if err := checkRef("capability", c); err != nil {
 			return nil, err
 		}
@@ -137,11 +184,11 @@ func (d *dockerSandbox) Open(ctx context.Context, opts OpenConfig) (Machine, err
 		return nil, err
 	}
 	defer cleanup()
-	args := dockerRunArgs(d.cfg, name, image, opts, envPath)
+	args := dockerRunArgs(cfg, name, image, opts, envPath)
 	if _, stderr, code, err := dockerRunWith(ctx, args, nil, opts.Env); err != nil || code != 0 {
 		return nil, fmt.Errorf("kritrim: docker run: %s %w", stderr, err)
 	}
-	return &dockerMachine{name: name, viaExec: d.cfg.ReadOnly || d.cfg.User != ""}, nil
+	return &dockerMachine{name: name, viaExec: cfg.ReadOnly || cfg.User != ""}, nil
 }
 
 type dockerMachine struct {
