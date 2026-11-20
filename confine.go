@@ -118,7 +118,7 @@ func (s *confinedSandbox) Open(ctx context.Context, opts OpenConfig) (Machine, e
 // attach to the inode the path names when the rule is made.
 func confinePath(p string) (string, error) {
 	if !filepath.IsAbs(p) || strings.Contains(p, "..") {
-		return "", fmt.Errorf("kritrim: Confined path %q must be absolute without ..", p)
+		return "", fmt.Errorf("kritrim: Confined path %q must be absolute and contain no parent-directory segments", p)
 	}
 	a, err := filepath.EvalSymlinks(filepath.Clean(p))
 	if err != nil {

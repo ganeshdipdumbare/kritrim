@@ -36,18 +36,12 @@ type localMachine struct {
 	workspace string
 }
 
-// command builds the exec.Cmd for argv. ctx nil means a process that
-// outlives its start context.
+// command builds the exec.Cmd for argv.
 func (m *localMachine) command(ctx context.Context, argv []string, dir string, env []string) (*exec.Cmd, error) {
 	if m.confine != nil {
 		return m.confinedCmd(ctx, argv, dir, env)
 	}
-	var cmd *exec.Cmd
-	if ctx != nil {
-		cmd = exec.CommandContext(ctx, argv[0], argv[1:]...)
-	} else {
-		cmd = exec.Command(argv[0], argv[1:]...)
-	}
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Dir, cmd.Env = dir, childEnv(env)
 	return cmd, nil
 }
@@ -136,8 +130,13 @@ func (m *localMachine) Start(ctx context.Context, r StartRequest) (Process, erro
 			return nil, err
 		}
 	}
-	//nolint:contextcheck // the process outlives the start context.
-	cmd, err := m.command(nil, r.Command, r.Dir, r.Env)
+	startCtx := context.Background()
+	if ctx != nil {
+		// The API bounds startup with ctx; the process itself survives its
+		// cancellation and is stopped through Process.Kill or Machine.Close.
+		startCtx = context.WithoutCancel(ctx)
+	}
+	cmd, err := m.command(startCtx, r.Command, r.Dir, r.Env)
 	if err != nil {
 		return nil, err
 	}
