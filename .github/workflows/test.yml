@@ -54,6 +54,10 @@ jobs:
           check-latest: true
       - name: compatibility with the latest v1 release
         run: |
+          # A release tag may be pushed after checkout starts. Refresh tags
+          # immediately before choosing the comparison base so gorelease is
+          # not given an older v1 tag than the module proxy knows about.
+          git fetch --tags origin
           base=$(git tag --list 'v1.*' --sort=-v:refname | head -n1)
           if [ -z "$base" ]; then
             echo "no v1 release yet; nothing to compare"
