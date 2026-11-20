@@ -28,7 +28,23 @@ func (localSandbox) Open(ctx context.Context, opts OpenConfig) (Machine, error) 
 	return &localMachine{}, nil
 }
 
-type localMachine struct{}
+type localMachine struct {
+	// confine, when set, runs every command under Confined's kernel
+	// confinement by re-executing self.
+	confine   *confineSpec
+	self      string
+	workspace string
+}
+
+// command builds the exec.Cmd for argv.
+func (m *localMachine) command(ctx context.Context, argv []string, dir string, env []string) (*exec.Cmd, error) {
+	if m.confine != nil {
+		return m.confinedCmd(ctx, argv, dir, env)
+	}
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	cmd.Dir, cmd.Env = dir, childEnv(env)
+	return cmd, nil
+}
 
 func (m *localMachine) Exec(ctx context.Context, r ExecRequest) (ExecResult, error) {
 	// The agent checks its allowlist before it reaches a machine. The check
@@ -39,7 +55,7 @@ func (m *localMachine) Exec(ctx context.Context, r ExecRequest) (ExecResult, err
 			return ExecResult{}, err
 		}
 	}
-	res, err := localExec(ctx, execRequest{Command: r.Command, Dir: r.Dir, Env: r.Env,
+	res, err := m.run(ctx, execRequest{Command: r.Command, Dir: r.Dir, Env: r.Env,
 		Stdin: r.Stdin, Timeout: r.Timeout}, false)
 	return ExecResult(res), err
 }
@@ -56,8 +72,10 @@ func (m *localMachine) ExecStream(ctx context.Context, r ExecRequest, emit func(
 			return ExecResult{}, err
 		}
 	}
-	cmd := exec.CommandContext(ctx, r.Command[0], r.Command[1:]...)
-	cmd.Dir, cmd.Env = r.Dir, childEnv(r.Env)
+	cmd, err := m.command(ctx, r.Command, r.Dir, r.Env)
+	if err != nil {
+		return ExecResult{}, err
+	}
 	if r.Stdin != nil {
 		cmd.Stdin = bytes.NewReader(r.Stdin)
 	}
@@ -112,8 +130,16 @@ func (m *localMachine) Start(ctx context.Context, r StartRequest) (Process, erro
 			return nil, err
 		}
 	}
-	cmd := exec.Command(r.Command[0], r.Command[1:]...)
-	cmd.Dir, cmd.Env = r.Dir, childEnv(r.Env)
+	startCtx := context.Background()
+	if ctx != nil {
+		// The API bounds startup with ctx; the process itself survives its
+		// cancellation and is stopped through Process.Kill or Machine.Close.
+		startCtx = context.WithoutCancel(ctx)
+	}
+	cmd, err := m.command(startCtx, r.Command, r.Dir, r.Env)
+	if err != nil {
+		return nil, err
+	}
 	in, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, err
@@ -157,7 +183,12 @@ func (m *localMachine) Write(ctx context.Context, path string, data []byte, mode
 	return os.WriteFile(path, data, mode)
 }
 
-func (m *localMachine) Close(ctx context.Context) error { return nil }
+func (m *localMachine) Close(ctx context.Context) error {
+	if m.workspace != "" {
+		return os.RemoveAll(m.workspace)
+	}
+	return nil
+}
 
 type localProc struct {
 	cmd  *exec.Cmd

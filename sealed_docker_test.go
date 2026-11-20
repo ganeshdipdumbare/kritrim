@@ -10,7 +10,12 @@ import (
 
 // TestSealedDocker runs a sealed agent in a real container: the box must
 // survive New returning, run a risky tool after a host approval, and answer.
-func TestSealedDocker(t *testing.T) {
+func TestSealedDocker(t *testing.T) { testSealedDocker(t, DockerConfig{Image: "alpine:3.20"}) }
+func TestSealedDockerStrict(t *testing.T) {
+	testSealedDocker(t, DockerConfig{Image: "alpine:3.20", Strict: true})
+}
+
+func testSealedDocker(t *testing.T, dc DockerConfig) {
 	if testing.Short() {
 		t.Skip("short mode")
 	}
@@ -43,7 +48,7 @@ func TestSealedDocker(t *testing.T) {
 			approved++
 			return Approve(), nil
 		},
-		Sealed: &Sealed{Sandbox: Docker(DockerConfig{Image: "alpine:3.20"}), Binary: bin},
+		Sealed: &Sealed{Sandbox: Docker(dc), Binary: bin},
 	})
 	if err != nil {
 		t.Fatal(err)

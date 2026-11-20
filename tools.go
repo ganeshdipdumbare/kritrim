@@ -29,8 +29,13 @@ type HTTPConfig struct {
 	// AllowHosts is required. Exact hosts may be private; "*." suffixes
 	// resolve and must be public.
 	AllowHosts []string
-	Headers    map[string]string
-	Timeout    time.Duration
+	// Endpoints allow hosts narrowed by port, method and path. A request
+	// is allowed when AllowHosts lists its host or an Endpoint matches it.
+	Endpoints []Endpoint
+	// Headers are sent with every request. A "secret://NAME" value is
+	// resolved on the host; see Config.SecretHosts for where it may go.
+	Headers map[string]string
+	Timeout time.Duration
 }
 
 // HTTP returns a tool that makes an HTTP request to an allowlisted host.
@@ -44,8 +49,12 @@ func HTTP(cfg HTTPConfig) Tool {
 			"body":   map[string]any{"type": "string", "description": "request body"},
 		}, "url"),
 	}
-	if len(cfg.AllowHosts) == 0 {
-		t.err = fmt.Errorf("kritrim: HTTP needs at least one allowed host")
+	if len(cfg.AllowHosts) == 0 && len(cfg.Endpoints) == 0 {
+		t.err = fmt.Errorf("kritrim: HTTP needs at least one allowed host or endpoint")
+		return t
+	}
+	if err := validateEndpoints(cfg.Endpoints); err != nil {
+		t.err = err
 		return t
 	}
 	t.run = func(ctx context.Context, args map[string]any) (string, error) {
@@ -56,7 +65,7 @@ func HTTP(cfg HTTPConfig) Tool {
 			return "", fmt.Errorf("url is required")
 		}
 		resp, err := envOf(ctx).HTTP(ctx, httpRequest{Method: method, URL: u, Headers: cfg.Headers,
-			Body: []byte(body), AllowHosts: cfg.AllowHosts, Timeout: cfg.Timeout})
+			Body: []byte(body), AllowHosts: cfg.AllowHosts, Endpoints: cfg.Endpoints, Timeout: cfg.Timeout})
 		if err != nil {
 			return "", err
 		}

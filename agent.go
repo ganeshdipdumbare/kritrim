@@ -89,6 +89,11 @@ type Config struct {
 	// Secrets are explicit secret values; a name missing here falls back
 	// to the environment.
 	Secrets map[string]string
+	// SecretHosts binds a secret name to the hosts its value may be sent
+	// to in a secret:// header ("api.github.com" or "*.example.com"). A
+	// secret with no binding is sent only to hosts an allowlist names
+	// exactly, never to a host matched by a "*." rule.
+	SecretHosts map[string][]string
 
 	// Client is the HTTP client used by the built-in tools.
 	Client *http.Client
@@ -132,6 +137,9 @@ type Sealed struct {
 	// Egress lists hosts the box may reach through the host proxy without a
 	// secret, e.g. "api.example.com" or "*.example.com".
 	Egress []string
+	// Endpoints are egress rules narrowed by port, method and path, for the
+	// box's HTTP requests through the host proxy.
+	Endpoints []Endpoint
 	// Secrets maps a secret name to the hosts its value may be sent to.
 	Secrets map[string][]string
 	// MaxTokens caps total tokens for the whole sealed agent.

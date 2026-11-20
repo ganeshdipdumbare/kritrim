@@ -104,6 +104,9 @@ func newSealed(cfg Config) (*Agent, error) {
 	if _, local := s.Sandbox.(localSandbox); local && !s.AllowUnsafeLocal {
 		return nil, errors.New("kritrim: the local sandbox is not an isolation boundary; set Sealed.AllowUnsafeLocal for development")
 	}
+	if err := validateEndpoints(s.Endpoints); err != nil {
+		return nil, err
+	}
 	seen := map[string]bool{}
 	for _, t := range cfg.Tools {
 		if err := t.validate(); err != nil {
@@ -134,7 +137,7 @@ func newSealed(cfg Config) (*Agent, error) {
 	}
 	bin := s.Binary
 	if bin == "" {
-		if _, local := s.Sandbox.(localSandbox); !local {
+		if !onHost(s.Sandbox) {
 			target := s.Platform
 			if target == "" {
 				target = "linux/amd64"
@@ -161,7 +164,7 @@ func newSealed(cfg Config) (*Agent, error) {
 	// nothing another user planted can be followed or swapped.
 	boxBin := "/tmp/kritrim-agent-" + newID()
 	cleanup := func() {}
-	if _, local := s.Sandbox.(localSandbox); local {
+	if onHost(s.Sandbox) {
 		dir, err := os.MkdirTemp("", "kritrim-box-")
 		if err != nil {
 			_ = m.Close(ctx)
@@ -323,6 +326,8 @@ func (b *boxHost) http(ctx context.Context, raw json.RawMessage) (any, error) {
 	}
 	defer release()
 	r.AllowHosts = allow
+	// The host's policy only: rules the box sends are never trusted.
+	r.Endpoints = b.cfg.Endpoints
 	r.sensitive = false
 	// secret:// would make the host read its own environment for the box.
 	// A box gets secrets only through placeholders from the secret RPC,
@@ -730,6 +735,17 @@ func (b *boxHost) close() error {
 		b.cleanup()
 	}
 	return err
+}
+
+// onHost reports a sandbox whose machine is this host (Local, Confined):
+// the box binary defaults to this executable and is written to a private
+// temp dir.
+func onHost(sb Sandbox) bool {
+	switch sb.(type) {
+	case localSandbox, *confinedSandbox:
+		return true
+	}
+	return false
 }
 
 func hostListed(host string, rules []string) bool {

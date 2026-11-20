@@ -39,7 +39,10 @@ type httpRequest struct {
 	Headers    map[string]string
 	Body       []byte
 	AllowHosts []string
-	Timeout    time.Duration
+	// Endpoints are port, method and path rules; a request is allowed when
+	// AllowHosts lists its host or an Endpoint matches it in full.
+	Endpoints []Endpoint
+	Timeout   time.Duration
 	// sensitive is set when a secret was placed in the request; such a
 	// request never follows a redirect to a different host.
 	sensitive bool
@@ -85,9 +88,16 @@ func (e *hostEnv) HTTP(ctx context.Context, r httpRequest) (*httpResponse, error
 	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
 		return nil, fmt.Errorf("kritrim: invalid URL %q", r.URL)
 	}
-	exact, ok := hostAllowed(u.Hostname(), r.AllowHosts)
-	if !ok {
-		return nil, fmt.Errorf("kritrim: host %q is not allowed", u.Hostname())
+	method := strings.ToUpper(r.Method)
+	if method == "" {
+		method = http.MethodGet
+	}
+	if !validMethod(method) {
+		return nil, fmt.Errorf("kritrim: HTTP method %q is not allowed", r.Method)
+	}
+	exact, err := e.egressAllowed(method, u, r.AllowHosts, r.Endpoints)
+	if err != nil {
+		return nil, err
 	}
 	if !exact {
 		if err := checkPublic(ctx, u.Hostname()); err != nil {
@@ -100,26 +110,32 @@ func (e *hostEnv) HTTP(ctx context.Context, r httpRequest) (*httpResponse, error
 	}
 	cctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	method := strings.ToUpper(r.Method)
-	if method == "" {
-		method = http.MethodGet
-	}
-	if !validMethod(method) {
-		return nil, fmt.Errorf("kritrim: HTTP method %q is not allowed", r.Method)
-	}
 	req, err := http.NewRequestWithContext(cctx, method, u.String(), bytes.NewReader(r.Body))
 	if err != nil {
 		return nil, err
 	}
 	sensitive := r.sensitive
 	for k, v := range r.Headers {
-		resolved := e.secrets(ctx, v)
-		if resolved != v {
-			sensitive = true
+		name, ok := strings.CutPrefix(v, "secret://")
+		if !ok {
+			req.Header.Set(k, v)
+			continue
 		}
-		req.Header.Set(k, resolved)
+		// A secret goes only to the hosts it is bound to (Config.SecretHosts),
+		// or, unbound, only to hosts named exactly: never to whatever host a
+		// "*." rule lets the model pick.
+		if err := e.secretAllowed(name, u.Hostname(), exact); err != nil {
+			return nil, err
+		}
+		val, err := e.Secret(ctx, name)
+		if err != nil {
+			return nil, err
+		}
+		sensitive = true
+		req.Header.Set(k, val)
 	}
-	client, err := egressClient(e.a.cfg.httpClient(), r.AllowHosts)
+	rules := append(append([]string{}, r.AllowHosts...), endpointHosts(r.Endpoints)...)
+	client, err := egressClient(e.a.cfg.httpClient(), rules)
 	if err != nil {
 		return nil, err
 	}
@@ -133,9 +149,9 @@ func (e *hostEnv) HTTP(ctx context.Context, r httpRequest) (*httpResponse, error
 			// back the 3xx.
 			return http.ErrUseLastResponse
 		}
-		exact, ok := hostAllowed(req.URL.Hostname(), r.AllowHosts)
-		if !ok {
-			return fmt.Errorf("kritrim: redirect to %q is not allowed", req.URL.Hostname())
+		exact, err := e.egressAllowed(req.Method, req.URL, r.AllowHosts, r.Endpoints)
+		if err != nil {
+			return fmt.Errorf("kritrim: redirect refused: %w", err)
 		}
 		if !exact {
 			return checkPublic(req.Context(), req.URL.Hostname())
@@ -152,6 +168,42 @@ func (e *hostEnv) HTTP(ctx context.Context, r httpRequest) (*httpResponse, error
 		return nil, err
 	}
 	return &httpResponse{Status: resp.StatusCode, Header: resp.Header, Body: body}, nil
+}
+
+// egressAllowed checks one request (or redirect) against the host list and
+// the endpoint rules. exact reports whether the allowing rule names the host
+// exactly, which lets it be a private address.
+func (e *hostEnv) egressAllowed(method string, u *url.URL, hosts []string, eps []Endpoint) (exact bool, err error) {
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return false, fmt.Errorf("kritrim: scheme %q is not allowed", u.Scheme)
+	}
+	hExact, hOK := hostAllowed(u.Hostname(), hosts)
+	m := matchEndpoints(method, u, eps)
+	if !hOK && !m.ok {
+		if m.why != "" {
+			return false, errors.New("kritrim: " + m.why)
+		}
+		return false, fmt.Errorf("kritrim: host %q is not allowed", u.Hostname())
+	}
+	if m.audit && !hOK {
+		logf(e.a.cfg, "egress audit: %s %s%s allowed by audit rule: %s", method, hostPort(u), u.EscapedPath(), m.why)
+	}
+	return (hOK && hExact) || (m.ok && m.exact), nil
+}
+
+// secretAllowed enforces where a secret:// header may be sent.
+func (e *hostEnv) secretAllowed(name, host string, exact bool) error {
+	host = strings.ToLower(host)
+	if hosts, ok := e.a.cfg.SecretHosts[name]; ok {
+		if hostListed(host, hosts) {
+			return nil
+		}
+		return fmt.Errorf("kritrim: secret %q may not be sent to %q", name, host)
+	}
+	if exact {
+		return nil
+	}
+	return fmt.Errorf("kritrim: secret %q may only be sent to an exact allowed host, not %q (bind it with Config.SecretHosts)", name, host)
 }
 
 func validMethod(m string) bool {
@@ -214,15 +266,6 @@ func (c Config) httpClient() *http.Client {
 	}
 }
 
-func (e *hostEnv) secrets(ctx context.Context, s string) string {
-	if strings.HasPrefix(s, "secret://") {
-		if v, err := e.Secret(ctx, strings.TrimPrefix(s, "secret://")); err == nil {
-			return v
-		}
-	}
-	return s
-}
-
 func (e *hostEnv) Exec(ctx context.Context, r execRequest) (execResult, error) {
 	if err := checkCommand(r); err != nil {
 		return execResult{}, err
@@ -250,6 +293,11 @@ func checkCommand(r execRequest) error {
 }
 
 func localExec(ctx context.Context, r execRequest, check bool) (execResult, error) {
+	return (&localMachine{}).run(ctx, r, check)
+}
+
+// run executes one command on the host, confined when the machine is.
+func (m *localMachine) run(ctx context.Context, r execRequest, check bool) (execResult, error) {
 	if check {
 		if err := checkCommand(r); err != nil {
 			return execResult{}, err
@@ -264,13 +312,14 @@ func localExec(ctx context.Context, r execRequest, check bool) (execResult, erro
 	}
 	cctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	cmd := exec.CommandContext(cctx, r.Command[0], r.Command[1:]...)
-	cmd.Dir = r.Dir
-	cmd.Env = childEnv(r.Env)
+	cmd, err := m.command(cctx, r.Command, r.Dir, r.Env)
+	if err != nil {
+		return execResult{}, err
+	}
 	cmd.Stdin = strings.NewReader(string(r.Stdin))
 	out, errb := boxutil.NewCapped(), boxutil.NewCapped()
 	cmd.Stdout, cmd.Stderr = out, errb
-	err := cmd.Run()
+	err = cmd.Run()
 	code := 0
 	if err != nil {
 		var ee *exec.ExitError

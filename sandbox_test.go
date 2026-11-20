@@ -125,3 +125,62 @@ func TestDockerRunArgsHardened(t *testing.T) {
 		}
 	}
 }
+
+func TestDockerHardening(t *testing.T) {
+	args := strings.Join(dockerRunArgs(DockerConfig{}, "n", "img", OpenConfig{}, ""), " ")
+	for _, want := range []string{"--ulimit core=0", "--ipc private", "--cap-drop ALL", "no-new-privileges"} {
+		if !strings.Contains(args, want) {
+			t.Errorf("missing %q in %s", want, args)
+		}
+	}
+	if _, err := (DockerConfig{Seccomp: "unconfined"}).hardened(); err == nil {
+		t.Error("unconfined seccomp accepted")
+	}
+	if _, err := (DockerConfig{Seccomp: "/no/such/profile.json"}).hardened(); err == nil {
+		t.Error("missing seccomp profile accepted")
+	}
+	if _, err := (DockerConfig{Strict: true, CapAdd: []string{"NET_RAW"}}).hardened(); err == nil {
+		t.Error("Strict accepted CapAdd")
+	}
+	if _, err := (DockerConfig{Strict: true, User: "0:0"}).hardened(); err == nil {
+		t.Error("Strict accepted root")
+	}
+	c, err := (DockerConfig{Strict: true}).hardened()
+	if err != nil || c.User != strictUser || !c.ReadOnly {
+		t.Fatalf("Strict not applied: %+v %v", c, err)
+	}
+}
+
+func TestDockerStrictSandbox(t *testing.T) {
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Skip("docker not installed")
+	}
+	if err := exec.Command("docker", "info").Run(); err != nil {
+		t.Skip("docker daemon not running")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	m, err := Docker(DockerConfig{Image: "alpine:3.20", Strict: true}).Open(ctx, OpenConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Close(ctx)
+	res, err := m.Exec(ctx, ExecRequest{Command: []string{"id", "-u"}, Timeout: 30 * time.Second})
+	if err != nil || strings.TrimSpace(res.Stdout) != "65534" {
+		t.Fatalf("not running as nobody: %+v %v", res, err)
+	}
+	if err := m.Write(ctx, "/tmp/f.txt", []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if b, err := m.Read(ctx, "/tmp/f.txt"); err != nil || string(b) != "hello" {
+		t.Fatalf("%q %v", b, err)
+	}
+	res, _ = m.Exec(ctx, ExecRequest{Command: []string{"touch", "/etc/x"}, Timeout: 30 * time.Second})
+	if res.Exit == 0 {
+		t.Fatal("root filesystem is writable")
+	}
+	res, _ = m.Exec(ctx, ExecRequest{Command: []string{"sh", "-c", "ulimit -c"}, Timeout: 30 * time.Second})
+	if strings.TrimSpace(res.Stdout) != "0" {
+		t.Fatalf("core dumps enabled: %q", res.Stdout)
+	}
+}
