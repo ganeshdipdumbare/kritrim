@@ -59,4 +59,8 @@ jobs:
             echo "no v1 release yet; nothing to compare"
             exit 0
           fi
+          if [ "$(git rev-parse HEAD)" = "$(git rev-parse "$base^{commit}")" ]; then
+            echo "HEAD is the latest v1 release ($base); nothing to compare"
+            exit 0
+          fi
           go run golang.org/x/exp/cmd/gorelease@v0.0.0-20261113113407-e3970619a1a4 -base="$base"
