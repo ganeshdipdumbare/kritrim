@@ -54,11 +54,14 @@ jobs:
           check-latest: true
       - name: compatibility with the latest v1 release
         run: |
-          # A release tag may be pushed after checkout starts. Refresh tags
-          # immediately before choosing the comparison base so gorelease is
-          # not given an older v1 tag than the module proxy knows about.
-          git fetch --tags origin
-          base=$(git tag --list 'v1.*' --sort=-v:refname | head -n1)
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            echo "API compatibility is checked before release tags; skipping $GITHUB_REF_NAME"
+            exit 0
+          fi
+          # Use published module versions as the source of truth. A Git tag
+          # may be missing locally or removed after its version was published.
+          versions=$(go list -m -versions github.com/ganeshdipdumbare/kritrim)
+          base=$(printf '%s\n' "$versions" | tr ' ' '\n' | grep '^v1\.' | sort -V | tail -n1 || true)
           if [ -z "$base" ]; then
             echo "no v1 release yet; nothing to compare"
             exit 0
